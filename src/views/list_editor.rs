@@ -222,6 +222,25 @@ impl ZedisKvFetcher for ZedisListValues {
         });
     }
 
+    /// Opens a dialog for editing the value at the specified row.
+    ///
+    /// Maps the visible index to the real index and triggers fetching the raw bytes.
+    /// The actual dialog opening is handled by ZedisEditor when it receives the
+    /// ListEditDialogReady event.
+    fn handle_edit_dialog(&self, row_ix: usize, _window: &mut Window, cx: &mut App) -> bool {
+        // Map visible index to real index when filtering is active
+        let real_index = self
+            .visible_item_indexes
+            .as_ref()
+            .and_then(|indexes| indexes.get(row_ix).copied())
+            .unwrap_or(row_ix);
+
+        self.server_state.update(cx, |state, cx| {
+            state.fetch_list_value_for_edit(real_index, cx);
+        });
+        true
+    }
+
     /// Creates a new instance and initializes the visible items list.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self {
         let mut this = Self {

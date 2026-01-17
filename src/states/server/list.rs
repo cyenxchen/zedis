@@ -21,6 +21,7 @@ use crate::{
     error::Error,
     states::ServerEvent,
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
@@ -311,6 +312,97 @@ impl ZedisServerState {
                 cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Fetch raw bytes for a list item and emit event when ready.
+    ///
+    /// Fetches the raw bytes from Redis using LINDEX, then emits `ListEditDialogReady` event.
+    /// The UI layer (ZedisEditor) should listen for this event and open the edit dialog.
+    pub fn fetch_list_value_for_edit(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some((key, _)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_clone = key.clone();
+
+        self.spawn(
+            ServerTask::UpdateListValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let bytes: Vec<u8> = cmd("LINDEX")
+                    .arg(key_clone.as_str())
+                    .arg(index)
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(bytes)
+            },
+            move |_this, result, cx| {
+                if let Ok(bytes) = result {
+                    cx.emit(ServerEvent::ListEditDialogReady(index, bytes));
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Update a list item at the given index with raw bytes.
+    ///
+    /// Uses LSET command to update the value directly with bytes.
+    pub fn update_list_value_bytes(&mut self, index: usize, new_bytes: Bytes, cx: &mut Context<Self>) {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+
+        // Update local state with string representation
+        let new_string: SharedString = String::from_utf8_lossy(&new_bytes).to_string().into();
+        if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
+            let list = Arc::make_mut(list_data);
+            if index < list.values.len() {
+                list.values[index] = new_string.clone();
+                cx.emit(ServerEvent::ValueUpdated(key.clone()));
+            }
+        }
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_clone = key.clone();
+        let new_bytes_vec = new_bytes.to_vec();
+
+        self.spawn(
+            ServerTask::UpdateListValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+
+                let _: () = cmd("LSET")
+                    .arg(key.as_str())
+                    .arg(index)
+                    .arg(new_bytes_vec)
+                    .query_async(&mut conn)
+                    .await?;
+
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.emit(ServerEvent::ValueUpdated(key_clone));
+                if let Err(e) = result {
+                    // Reload value on error to sync with server
+                    cx.emit(ServerEvent::ErrorOccurred(crate::states::ErrorMessage {
+                        category: "update_list_value".into(),
+                        message: e.to_string().into(),
+                        created_at: crate::helpers::unix_ts(),
+                    }));
                 }
                 cx.notify();
             },

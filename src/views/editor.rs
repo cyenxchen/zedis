@@ -14,6 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
+    components::{EditValueDialogParams, open_edit_value_dialog},
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
@@ -93,8 +94,10 @@ impl ZedisEditor {
         });
 
         // Subscribe to server events to track when keys are selected
-        subscriptions.push(
-            cx.subscribe(&server_state, |this, _server_state, event, cx| match event {
+        subscriptions.push(cx.subscribe_in(
+            &server_state,
+            window,
+            |this, server_state, event, window, cx| match event {
                 ServerEvent::KeySelected(_) => {
                     this.selected_key_at = Some(Instant::now());
                 }
@@ -108,9 +111,12 @@ impl ZedisEditor {
                     }
                     _ => {}
                 },
+                ServerEvent::ListEditDialogReady(index, bytes) => {
+                    this.handle_list_edit_dialog_ready(*index, bytes, server_state, window, cx);
+                }
                 _ => {}
-            }),
-        );
+            },
+        ));
 
         // Subscribe to TTL input events for Enter key and blur
         subscriptions.push(cx.subscribe_in(
@@ -152,6 +158,43 @@ impl ZedisEditor {
             .map(|t| t.elapsed() < Duration::from_millis(RECENTLY_SELECTED_THRESHOLD_MS))
             .unwrap_or(false)
     }
+
+    /// Handle list edit dialog ready event
+    /// Opens the edit value dialog with custom save handler for list items
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn handle_list_edit_dialog_ready(
+        &mut self,
+        index: usize,
+        bytes: &[u8],
+        server_state: &Entity<ZedisServerState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = server_state.read(cx).key().unwrap_or_default();
+        let server_state_clone = server_state.clone();
+
+        // Create custom save handler for list item
+        let on_save: std::rc::Rc<dyn Fn(bytes::Bytes, &mut Window, &mut gpui::App) -> bool> = std::rc::Rc::new(
+            move |new_bytes: bytes::Bytes, _window: &mut Window, cx: &mut gpui::App| {
+                server_state_clone.update(cx, |state, cx| {
+                    state.update_list_value_bytes(index, new_bytes, cx);
+                });
+                true
+            },
+        );
+
+        open_edit_value_dialog(
+            EditValueDialogParams {
+                key,
+                bytes: bytes::Bytes::from(bytes.to_vec()),
+                server_state: server_state.clone(),
+                on_save: Some(on_save),
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Handle TTL update when user submits new value
     fn handle_update_ttl(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let key = self.server_state.clone().read(cx).key().unwrap_or_default();
@@ -313,6 +356,37 @@ impl ZedisEditor {
                     .on_click(cx.listener(move |this, _event, window, cx| {
                         this.save(window, cx);
                     }))
+                    .into_any_element(),
+            );
+
+            // Add advanced edit button for binary/compressed data editing
+            let server_state_for_edit = self.server_state.clone();
+            let key_for_edit = key.clone();
+            btns.push(
+                Button::new("zedis-editor-edit-dialog")
+                    .ml_2()
+                    .disabled(should_show_loading)
+                    .outline()
+                    .tooltip(i18n_editor(cx, "edit_dialog_tooltip"))
+                    .icon(CustomIconName::FilePenLine)
+                    .on_click(move |_event, window, cx| {
+                        let server_state = server_state_for_edit.clone();
+                        let key = key_for_edit.clone();
+
+                        // Get bytes value from server state
+                        if let Some(bytes_value) = server_state.read(cx).value().and_then(|v| v.bytes_value()) {
+                            open_edit_value_dialog(
+                                EditValueDialogParams {
+                                    key: key.clone(),
+                                    bytes: bytes_value.bytes.clone(),
+                                    server_state: server_state.clone(),
+                                    on_save: None,
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                    })
                     .into_any_element(),
             );
         }

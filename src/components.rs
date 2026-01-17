@@ -14,8 +14,10 @@
 
 mod card;
 mod dialog;
+mod edit_value_dialog;
 mod kv_delegate;
 
 pub use card::Card;
 pub use dialog::*;
+pub use edit_value_dialog::{EditValueDialogParams, open_edit_value_dialog};
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};

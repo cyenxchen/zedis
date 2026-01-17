@@ -100,6 +100,7 @@ delete_key_tooltip = "删除键 (Key)"
 copy_key_tooltip = "复制键名"
 copied_key_to_clipboard = "键名已复制到剪贴板"
 can_not_edit_value = "无法编辑此格式的值"
+edit_dialog_tooltip = "高级编辑（支持压缩和格式转换）"
 
 [key_tree]
 no_keys_found = "未找到任何键"
