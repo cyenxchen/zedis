@@ -19,6 +19,7 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
+    helpers::codec::{CompressionFormat, MAX_DECOMPRESS_BYTES, decompress, detect},
     states::ServerEvent,
 };
 use bytes::Bytes;
@@ -29,6 +30,23 @@ use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Convert bytes to display string, handling compressed data.
+///
+/// Detects if the bytes are compressed and decompresses them before converting to string.
+/// This ensures that compressed data is displayed correctly in the UI.
+fn bytes_to_display_string(bytes: &[u8]) -> String {
+    let detection = detect(bytes);
+
+    // Try to decompress if compression is detected
+    let data = if detection.compression != CompressionFormat::None {
+        decompress(bytes, detection.compression, MAX_DECOMPRESS_BYTES).unwrap_or_else(|_| bytes.to_vec())
+    } else {
+        bytes.to_vec()
+    };
+
+    String::from_utf8_lossy(&data).to_string()
+}
+
 /// Fetch a range of elements from a Redis List.
 ///
 /// Returns a vector of strings. Binary data is lossily converted to UTF-8.
@@ -38,7 +56,7 @@ async fn get_redis_list_value(conn: &mut RedisAsyncConn, key: &str, start: usize
     if value.is_empty() {
         return Ok(vec![]);
     }
-    let value: Vec<String> = value.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect();
+    let value: Vec<String> = value.iter().map(|v| bytes_to_display_string(v)).collect();
     Ok(value)
 }
 
@@ -361,8 +379,8 @@ impl ZedisServerState {
         };
         value.status = RedisValueStatus::Updating;
 
-        // Update local state with string representation
-        let new_string: SharedString = String::from_utf8_lossy(&new_bytes).to_string().into();
+        // Update local state with string representation (decompress if needed for display)
+        let new_string: SharedString = bytes_to_display_string(&new_bytes).into();
         if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
             let list = Arc::make_mut(list_data);
             if index < list.values.len() {
