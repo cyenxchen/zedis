@@ -178,6 +178,9 @@ pub enum ServerEvent {
     ProtobufSchemaLoaded(Vec<SharedString>),
     /// Protobuf message type has been selected
     ProtobufTypeSelected(SharedString),
+
+    /// List item edit dialog ready (index, bytes data)
+    ListEditDialogReady(usize, Vec<u8>),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}

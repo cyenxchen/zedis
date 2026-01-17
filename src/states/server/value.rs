@@ -203,7 +203,10 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
         } else if is_valid_messagepack(bytes) {
             (DataFormat::MessagePack, None)
         } else if is_likely_protobuf(bytes) {
-            (DataFormat::ProtobufRaw, Some("application/x-protobuf".to_string().into()))
+            (
+                DataFormat::ProtobufRaw,
+                Some("application/x-protobuf".to_string().into()),
+            )
         } else {
             (DataFormat::Bytes, None)
         };
@@ -561,6 +564,77 @@ impl ZedisServerState {
                     if result.is_err() {
                         value.size = original_size;
                         value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
+                    }
+                    cx.emit(ServerEvent::ValueUpdated(current_key));
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Saves raw bytes value for a Redis string key
+    ///
+    /// This method is used by the edit dialog to save binary data, including
+    /// compressed data. It handles the same TTL preservation logic as save_value.
+    ///
+    /// # Arguments
+    /// * `key` - The Redis key to save
+    /// * `bytes` - The raw bytes to save (may be compressed)
+    /// * `cx` - The context for state updates
+    pub fn save_bytes_value(&mut self, key: SharedString, bytes: Bytes, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let Some(value) = self.value.as_mut() else {
+            return;
+        };
+
+        let Some(original_bytes_value) = value.bytes_value() else {
+            return;
+        };
+        let original_size = value.size;
+
+        value.status = RedisValueStatus::Updating;
+        value.size = bytes.len();
+        let current_key = key.clone();
+        let ttl = value.ttl().map(|ttl| ttl.num_milliseconds()).unwrap_or_default();
+
+        // Clone bytes for the async task
+        let bytes_for_save = bytes.clone();
+
+        cx.notify();
+        self.spawn(
+            ServerTask::SaveValue,
+            move || async move {
+                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let mut conn = client.connection();
+                let mut binding = cmd("SET");
+                let mut set_cmd = binding.arg(key.as_str()).arg(bytes_for_save.as_ref());
+                // keep ttl if the version is at least 6.0.0
+                set_cmd = if client.is_at_least_version("6.0.0") {
+                    set_cmd.arg("KEEPTTL")
+                } else if ttl > 0 {
+                    set_cmd.arg("PX").arg(ttl)
+                } else {
+                    set_cmd
+                };
+                let _: () = set_cmd.query_async(&mut conn).await?;
+                Ok(())
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    value.status = RedisValueStatus::Idle;
+                    // Recover original value if save failed
+                    if result.is_err() {
+                        value.size = original_size;
+                        value.data = Some(RedisValueData::Bytes(original_bytes_value.clone()));
+                    } else {
+                        // Update the bytes value with new data
+                        let mut new_bytes_value = (*original_bytes_value).clone();
+                        new_bytes_value.bytes = bytes;
+                        // Re-detect format after save
+                        new_bytes_value.detect_and_update(1000);
+                        value.data = Some(RedisValueData::Bytes(Arc::new(new_bytes_value)));
                     }
                     cx.emit(ServerEvent::ValueUpdated(current_key));
                 }

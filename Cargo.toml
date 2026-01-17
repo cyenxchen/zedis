@@ -53,6 +53,7 @@ russh = "0.56.0"
 rust-embed = { version = "8.9.0", default-features = false }
 rust-i18n = "3.1.5"
 ruzstd = "0.8.2"
+zstd = "0.13"
 schemars = "1.1.0"
 semver = "1.0.27"
 serde = "1.0.228"

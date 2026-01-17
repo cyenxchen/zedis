@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod app;
+pub mod edit_session;
 mod i18n;
 mod server;
 

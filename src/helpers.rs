@@ -15,6 +15,7 @@
 use std::env;
 
 mod action;
+pub mod codec;
 mod common;
 mod font;
 mod fs;

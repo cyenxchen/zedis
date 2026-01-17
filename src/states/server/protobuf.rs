@@ -165,10 +165,8 @@ impl ProtobufSchema {
         })?;
 
         // Extract message types
-        let mut message_types: Vec<SharedString> = pool
-            .all_messages()
-            .map(|m| m.full_name().to_string().into())
-            .collect();
+        let mut message_types: Vec<SharedString> =
+            pool.all_messages().map(|m| m.full_name().to_string().into()).collect();
 
         message_types.sort();
 
@@ -201,9 +199,11 @@ impl ProtobufSchema {
             message: "No message type selected".to_string(),
         })?;
 
-        let descriptor = pool.get_message_by_name(type_name.as_str()).ok_or_else(|| Error::Invalid {
-            message: format!("Message type '{}' not found", type_name),
-        })?;
+        let descriptor = pool
+            .get_message_by_name(type_name.as_str())
+            .ok_or_else(|| Error::Invalid {
+                message: format!("Message type '{}' not found", type_name),
+            })?;
 
         let message = DynamicMessage::decode(descriptor, bytes).map_err(|e| Error::Invalid {
             message: format!("Failed to decode protobuf: {}", e),
@@ -227,9 +227,11 @@ impl ProtobufSchema {
             message: "No message type selected".to_string(),
         })?;
 
-        let descriptor = pool.get_message_by_name(type_name.as_str()).ok_or_else(|| Error::Invalid {
-            message: format!("Message type '{}' not found", type_name),
-        })?;
+        let descriptor = pool
+            .get_message_by_name(type_name.as_str())
+            .ok_or_else(|| Error::Invalid {
+                message: format!("Message type '{}' not found", type_name),
+            })?;
 
         // Deserialize JSON to DynamicMessage using prost_reflect's serde support
         let mut deserializer = serde_json::Deserializer::from_str(json_str);
@@ -278,19 +280,14 @@ mod tests {
             from_default.proto_files.len(),
             "test: proto_files equal"
         );
-        assert_eq!(
-            from_new.pool.is_none(),
-            from_default.pool.is_none(),
-            "test: pool equal"
-        );
+        assert_eq!(from_new.pool.is_none(), from_default.pool.is_none(), "test: pool equal");
         assert_eq!(
             from_new.message_types.len(),
             from_default.message_types.len(),
             "test: message_types equal"
         );
         assert_eq!(
-            from_new.selected_type,
-            from_default.selected_type,
+            from_new.selected_type, from_default.selected_type,
             "test: selected_type equal"
         );
     }
@@ -491,10 +488,7 @@ message SimpleMessage {{
 
         assert!(result.is_ok(), "test: should load valid proto file");
         assert!(schema.has_schema(), "test: should have schema after loading");
-        assert!(
-            !schema.message_types().is_empty(),
-            "test: should have message types"
-        );
+        assert!(!schema.message_types().is_empty(), "test: should have message types");
     }
 
     #[test]

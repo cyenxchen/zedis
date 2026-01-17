@@ -269,8 +269,7 @@ pub fn is_likely_protobuf(bytes: &[u8]) -> bool {
             return false;
         }
         // Also skip if it looks like JSON
-        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
-            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        if (trimmed.starts_with('{') && trimmed.ends_with('}')) || (trimmed.starts_with('[') && trimmed.ends_with(']'))
         {
             return false;
         }
@@ -296,9 +295,10 @@ pub fn is_likely_protobuf(bytes: &[u8]) -> bool {
 
     // 2. Check for suspicious patterns that indicate non-protobuf data
     // If all fields are LengthDelimited with very short lengths, might be false positive
-    let all_short_strings = msg.fields.iter().all(|(_, f)| {
-        matches!(f, ProtoField::LengthDelimited(b) if b.len() <= 2)
-    });
+    let all_short_strings = msg
+        .fields
+        .iter()
+        .all(|(_, f)| matches!(f, ProtoField::LengthDelimited(b) if b.len() <= 2));
 
     if all_short_strings && msg.fields.len() == 1 {
         return false;
@@ -406,7 +406,11 @@ mod tests {
         // All bytes have continuation bit set except the last
         let mut too_long = vec![0x80; 10];
         too_long.push(0x01); // 11th byte without continuation
-        assert_eq!(decode_varint_safe(&too_long), None, "test: 11 byte varint should be rejected");
+        assert_eq!(
+            decode_varint_safe(&too_long),
+            None,
+            "test: 11 byte varint should be rejected"
+        );
     }
 
     #[test]
@@ -508,10 +512,7 @@ mod tests {
         // wire_type 0 (varint) is encoded in lower 3 bits
         let mut data = build_varint(536870912_u64 << 3); // field 536870912, varint (wire_type=0)
         data.extend(build_varint(1));
-        assert!(
-            try_parse_raw_protobuf(&data).is_none(),
-            "test: field number too large"
-        );
+        assert!(try_parse_raw_protobuf(&data).is_none(), "test: field number too large");
     }
 
     #[test]
@@ -519,14 +520,8 @@ mod tests {
         // Wire types 6 and 7 are invalid
         let data6 = build_field_key(1, 6);
         let data7 = build_field_key(1, 7);
-        assert!(
-            try_parse_raw_protobuf(&data6).is_none(),
-            "test: wire type 6 invalid"
-        );
-        assert!(
-            try_parse_raw_protobuf(&data7).is_none(),
-            "test: wire type 7 invalid"
-        );
+        assert!(try_parse_raw_protobuf(&data6).is_none(), "test: wire type 6 invalid");
+        assert!(try_parse_raw_protobuf(&data7).is_none(), "test: wire type 7 invalid");
     }
 
     #[test]
@@ -538,10 +533,7 @@ mod tests {
             try_parse_raw_protobuf(&start_group).is_none(),
             "test: StartGroup rejected"
         );
-        assert!(
-            try_parse_raw_protobuf(&end_group).is_none(),
-            "test: EndGroup rejected"
-        );
+        assert!(try_parse_raw_protobuf(&end_group).is_none(), "test: EndGroup rejected");
     }
 
     #[test]
@@ -549,10 +541,7 @@ mod tests {
         // Fixed64 needs 8 bytes, provide only 4
         let mut data = build_field_key(1, 1); // Fixed64
         data.extend(&[0x01, 0x02, 0x03, 0x04]); // only 4 bytes
-        assert!(
-            try_parse_raw_protobuf(&data).is_none(),
-            "test: incomplete Fixed64"
-        );
+        assert!(try_parse_raw_protobuf(&data).is_none(), "test: incomplete Fixed64");
     }
 
     #[test]
@@ -560,10 +549,7 @@ mod tests {
         // Fixed32 needs 4 bytes, provide only 2
         let mut data = build_field_key(1, 5); // Fixed32
         data.extend(&[0x01, 0x02]); // only 2 bytes
-        assert!(
-            try_parse_raw_protobuf(&data).is_none(),
-            "test: incomplete Fixed32"
-        );
+        assert!(try_parse_raw_protobuf(&data).is_none(), "test: incomplete Fixed32");
     }
 
     #[test]
@@ -585,10 +571,7 @@ mod tests {
 
     #[test]
     fn test_parse_single_byte() {
-        assert!(
-            try_parse_raw_protobuf(&[0x08]).is_none(),
-            "test: single byte"
-        );
+        assert!(try_parse_raw_protobuf(&[0x08]).is_none(), "test: single byte");
     }
 
     #[test]
@@ -655,15 +638,24 @@ mod tests {
     #[test]
     fn test_likely_protobuf_xml_detection() {
         assert!(!is_likely_protobuf(b"<root>content</root>"), "test: XML excluded");
-        assert!(!is_likely_protobuf(b"<?xml version=\"1.0\"?>"), "test: XML declaration excluded");
-        assert!(!is_likely_protobuf(b"<html><body></body></html>"), "test: HTML excluded");
+        assert!(
+            !is_likely_protobuf(b"<?xml version=\"1.0\"?>"),
+            "test: XML declaration excluded"
+        );
+        assert!(
+            !is_likely_protobuf(b"<html><body></body></html>"),
+            "test: HTML excluded"
+        );
     }
 
     #[test]
     fn test_likely_protobuf_json_detection() {
         assert!(!is_likely_protobuf(br#"{"a": 1}"#), "test: JSON object excluded");
         assert!(!is_likely_protobuf(b"[1, 2, 3]"), "test: JSON array excluded");
-        assert!(!is_likely_protobuf(br#"{ "nested": {"key": "value"} }"#), "test: nested JSON excluded");
+        assert!(
+            !is_likely_protobuf(br#"{ "nested": {"key": "value"} }"#),
+            "test: nested JSON excluded"
+        );
     }
 
     #[test]
@@ -806,8 +798,7 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("test: valid JSON");
 
         assert_eq!(
-            parsed["1"],
-            "line1\nline2\ttabbed\r\nwindows",
+            parsed["1"], "line1\nline2\ttabbed\r\nwindows",
             "test: allowed whitespace preserved"
         );
     }
