@@ -214,6 +214,17 @@ pub fn detect(bytes: &[u8]) -> Detection {
     }
 }
 
+/// Read the declared decompressed size from LZ4 block format header.
+/// LZ4 block format prepends a 4-byte little-endian size prefix.
+/// Returns None if bytes are too short.
+fn lz4_declared_size(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let size = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    Some(size)
+}
+
 /// Detect compression format from bytes
 fn detect_compression(bytes: &[u8]) -> CompressionFormat {
     if bytes.len() < 2 {
@@ -237,7 +248,11 @@ fn detect_compression(bytes: &[u8]) -> CompressionFormat {
 
     // LZ4 block format: try to decompress to detect
     // LZ4 doesn't have a magic number, so we try decompression
-    if decompress_size_prepended(bytes).is_ok() {
+    // First check the declared size to prevent compression bomb attacks
+    if let Some(declared_size) = lz4_declared_size(bytes)
+        && declared_size <= MAX_DECOMPRESS_BYTES
+        && decompress_size_prepended(bytes).is_ok()
+    {
         return CompressionFormat::Lz4;
     }
 

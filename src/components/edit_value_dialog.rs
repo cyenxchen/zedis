@@ -300,11 +300,14 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             let bytes = Bytes::from(bytes);
                             // Use on_save callback if provided, otherwise fallback to save_bytes_value
                             if let Some(ref save_fn) = on_save_for_ok {
-                                if save_fn(bytes, window, cx) {
-                                    window.close_dialog(cx);
-                                    return true;
+                                let ok = save_fn(bytes, window, cx);
+                                if !ok {
+                                    // Restore session on failure so user can retry
+                                    session_for_save.set(s);
+                                    return false;
                                 }
-                                return false;
+                                window.close_dialog(cx);
+                                return true;
                             }
                             // Fallback: save bytes value directly
                             let key = key_for_save.clone();
@@ -358,9 +361,13 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                                         let bytes = Bytes::from(bytes);
                                         // Use on_save callback if provided, otherwise fallback to save_bytes_value
                                         if let Some(ref save_fn) = on_save_for_btn {
-                                            if save_fn(bytes, window, cx) {
-                                                window.close_dialog(cx);
+                                            let ok = save_fn(bytes, window, cx);
+                                            if !ok {
+                                                // Restore session on failure so user can retry
+                                                session_for_btn.set(s);
+                                                return;
                                             }
+                                            window.close_dialog(cx);
                                             return;
                                         }
                                         // Fallback: save bytes value directly
