@@ -108,8 +108,9 @@ impl RedisBytesValue {
                 .and_then(|v| serde_json::to_string_pretty(&v).ok())
                 .map(|s| (DataFormat::Preview, SharedString::from(s))),
 
-            DataFormat::ProtobufRaw => decode_raw_to_json(data)
-                .map(|s| (DataFormat::ProtobufRaw, SharedString::from(s))),
+            DataFormat::ProtobufRaw => {
+                decode_raw_to_json(data).map(|s| (DataFormat::ProtobufRaw, SharedString::from(s)))
+            }
 
             DataFormat::Gzip => process_decompressed({
                 let mut decoder = GzDecoder::new(data);

@@ -15,6 +15,7 @@
 use std::env;
 
 mod action;
+pub mod codec;
 mod common;
 mod font;
 mod fs;
@@ -26,9 +27,9 @@ mod validate;
 pub use action::*;
 pub use common::*;
 pub use font::get_font_family;
-pub use protobuf::{decode_raw_to_json, is_likely_protobuf};
 pub use fs::get_or_create_config_dir;
 pub use fs::is_app_store_build;
+pub use protobuf::{decode_raw_to_json, is_likely_protobuf};
 pub use string::*;
 pub use time::unix_ts;
 pub use validate::*;

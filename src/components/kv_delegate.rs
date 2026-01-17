@@ -79,6 +79,12 @@ pub trait ZedisKvFetcher: 'static {
     /// Updates values for a specific row.
     fn handle_update_value(&self, _row_ix: usize, _values: Vec<SharedString>, _window: &mut Window, _cx: &mut App) {}
 
+    /// Opens a dialog for editing the value at the specified row.
+    /// Returns true if a dialog was opened, false to fall back to inline editing.
+    fn handle_edit_dialog(&self, _row_ix: usize, _window: &mut Window, _cx: &mut App) -> bool {
+        false
+    }
+
     /// Factory method to create a new instance.
     fn new(server_state: Entity<ZedisServerState>, value: RedisValue) -> Self;
 }
@@ -237,6 +243,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 Icon::new(CustomIconName::FilePenLine)
             };
 
+            let fetcher_for_edit = self.fetcher.clone();
             let update_btn = Button::new(("zedis-editor-table-action-update-btn", row_ix))
                 .small()
                 .ghost()
@@ -248,8 +255,11 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                     if is_editing {
                         this.delegate_mut().handle_update_row(row_ix, window, cx);
                     } else {
-                        this.delegate_mut().handle_edit_row(row_ix, window, cx);
-                        cx.notify();
+                        // Try dialog edit first, fall back to inline edit
+                        if !fetcher_for_edit.handle_edit_dialog(row_ix, window, cx) {
+                            this.delegate_mut().handle_edit_row(row_ix, window, cx);
+                            cx.notify();
+                        }
                     }
                     cx.stop_propagation();
                 }));

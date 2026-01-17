@@ -23,12 +23,12 @@ use chrono::Local;
 use gpui::SharedString;
 use gpui::prelude::*;
 use parking_lot::RwLock;
+use protobuf::ProtobufSchema;
 use std::str::FromStr;
 use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
 use uuid::Uuid;
-use protobuf::ProtobufSchema;
 use value::{KeyType, RedisValue, RedisValueData};
 
 pub mod event;

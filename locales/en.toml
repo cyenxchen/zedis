@@ -110,6 +110,7 @@ delete_key_tooltip = "Delete key"
 copy_key_tooltip = "Copy key name"
 copied_key_to_clipboard = "Copied key name to clipboard"
 can_not_edit_value = "Can not edit the value in this format"
+edit_dialog_tooltip = "Advanced edit (supports compression and format conversion)"
 
 [key_tree]
 no_keys_found = "No keys found"
