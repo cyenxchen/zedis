@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::value::{DataFormat, KeyType, RedisBytesValue, RedisValue, RedisValueData, detect_format};
-use crate::helpers::decompress_zstd;
+use crate::helpers::{decode_raw_to_json, decompress_zstd};
 use crate::{connection::RedisAsyncConn, error::Error};
 use bytes::Bytes;
 use flate2::read::GzDecoder;
@@ -107,6 +107,9 @@ impl RedisBytesValue {
                 .ok()
                 .and_then(|v| serde_json::to_string_pretty(&v).ok())
                 .map(|s| (DataFormat::Preview, SharedString::from(s))),
+
+            DataFormat::ProtobufRaw => decode_raw_to_json(data)
+                .map(|s| (DataFormat::ProtobufRaw, SharedString::from(s))),
 
             DataFormat::Gzip => process_decompressed({
                 let mut decoder = GzDecoder::new(data);

@@ -17,7 +17,8 @@ use crate::{
     connection::RedisClientDescription,
     helpers::humanize_keystroke,
     states::{
-        ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar, i18n_status_bar,
+        DataFormat, ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar,
+        i18n_status_bar,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -125,15 +126,19 @@ impl SelectItem for DbInfo {
 struct StatusBarState {
     server_state: StatusBarServerState,
     data_format: Option<SharedString>,
+    data_format_type: Option<DataFormat>,
     error: Option<ErrorMessage>,
+    protobuf_types: Vec<SharedString>,
 }
 
 pub struct ZedisStatusBar {
     state: StatusBarState,
 
     viewer_mode_state: Entity<SelectState<SearchableVec<SharedString>>>,
+    protobuf_type_state: Entity<SelectState<SearchableVec<SharedString>>>,
     db_state: Entity<SelectState<Vec<DbInfo>>>,
     should_reset_viewer_mode: bool,
+    should_reset_protobuf_types: bool,
     server_state: Entity<ZedisServerState>,
     heartbeat_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -187,9 +192,18 @@ impl ZedisStatusBar {
                             format = format!("{}({})", format, mime);
                         }
                         this.state.data_format = Some(format.into());
+                        this.state.data_format_type = Some(value.format);
                     } else {
                         this.state.data_format = None;
+                        this.state.data_format_type = None;
                     }
+                }
+                ServerEvent::ProtobufSchemaLoaded(types) => {
+                    this.state.protobuf_types = types.clone();
+                    this.should_reset_protobuf_types = true;
+                }
+                ServerEvent::ProtobufTypeSelected(_) => {
+                    // Re-decode value with new type if applicable
                 }
                 _ => {
                     return;
@@ -224,6 +238,33 @@ impl ZedisStatusBar {
             },
         ));
 
+        // Initialize protobuf type selector with "Rawproto" as default
+        let protobuf_type_state = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec!["Rawproto".into()]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+
+        subscriptions.push(cx.subscribe_in(
+            &protobuf_type_state,
+            window,
+            |view, _state, event: &SelectEvent<SearchableVec<SharedString>>, _window, cx| match event {
+                SelectEvent::Confirm(value) => {
+                    if let Some(selected_value) = value {
+                        // Only update if not "Rawproto"
+                        if selected_value.as_str() != "Rawproto" {
+                            view.server_state.update(cx, |state, cx| {
+                                state.set_protobuf_type(selected_value.clone(), cx);
+                            });
+                        }
+                    }
+                }
+            },
+        ));
+
         let db_items = (0..16)
             .map(|db| DbInfo {
                 label: format!("DB: {}", db).into(),
@@ -249,10 +290,12 @@ impl ZedisStatusBar {
         let mut this = Self {
             heartbeat_task: None,
             viewer_mode_state,
+            protobuf_type_state,
             db_state,
             server_state: server_state.clone(),
             _subscriptions: subscriptions,
             should_reset_viewer_mode: false,
+            should_reset_protobuf_types: false,
             state: StatusBarState { ..Default::default() },
         };
         this.fill_state(server_state.clone(), cx);
@@ -465,6 +508,60 @@ impl ZedisStatusBar {
                 .text_align(TextAlign::Right),
         )
     }
+
+    /// Render protobuf controls (type selector and load button)
+    fn render_protobuf_controls(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Only show if current format is protobuf
+        let is_protobuf = matches!(
+            self.state.data_format_type,
+            Some(DataFormat::ProtobufRaw) | Some(DataFormat::Protobuf)
+        );
+
+        if !is_protobuf {
+            return h_flex().into_any_element();
+        }
+
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(Label::new("Type:").text_xs())
+            .child(Select::new(&self.protobuf_type_state).appearance(false).small())
+            .child(
+                Button::new("load-proto")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::FolderOpen)
+                    .tooltip("Load .proto file")
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.open_proto_file_picker(cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Open file picker to select .proto files
+    fn open_proto_file_picker(&self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+
+        cx.spawn(async move |_this, cx| {
+            let handle = rfd::AsyncFileDialog::new()
+                .add_filter("Proto files", &["proto"])
+                .set_title("Select .proto files")
+                .pick_files()
+                .await;
+
+            if let Some(files) = handle {
+                let paths: Vec<String> = files.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
+
+                if !paths.is_empty() {
+                    let _ = server_state.update(cx, |state, cx| {
+                        state.load_proto_files(paths, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
 }
 
 impl Render for ZedisStatusBar {
@@ -479,6 +576,16 @@ impl Render for ZedisStatusBar {
             });
             self.should_reset_viewer_mode = false;
         }
+        if self.should_reset_protobuf_types {
+            // Update protobuf type selector with loaded types
+            let mut items: Vec<SharedString> = vec!["Rawproto".into()];
+            items.extend(self.state.protobuf_types.clone());
+            self.protobuf_type_state.update(cx, |state, cx| {
+                state.set_items(SearchableVec::new(items), window, cx);
+                state.set_selected_index(Some(IndexPath::new(0)), window, cx);
+            });
+            self.should_reset_protobuf_types = false;
+        }
         h_flex()
             .justify_between()
             .text_sm()
@@ -491,6 +598,7 @@ impl Render for ZedisStatusBar {
             .child(self.render_server_status(window, cx))
             .child(self.render_editor_settings(window, cx))
             .child(self.render_data_format(window, cx))
+            .child(self.render_protobuf_controls(window, cx))
             .child(self.render_viewer_mode(window, cx))
             .child(self.render_errors(window, cx))
     }

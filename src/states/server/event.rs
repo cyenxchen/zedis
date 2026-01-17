@@ -173,6 +173,11 @@ pub enum ServerEvent {
 
     /// Trigger Action
     EditonActionTriggered(EditorAction),
+
+    /// Protobuf schema has been loaded
+    ProtobufSchemaLoaded(Vec<SharedString>),
+    /// Protobuf message type has been selected
+    ProtobufTypeSelected(SharedString),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}
