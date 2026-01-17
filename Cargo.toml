@@ -46,6 +46,8 @@ redis = { version = "1.0.2", features = [
     "tls-rustls-insecure",
     "aio",
 ] }
+prost-reflect = { version = "0.14", features = ["serde"] }
+rfd = "0.15"
 rmp-serde = "1.3.1"
 rust-embed = { version = "8.9.0", default-features = false }
 rust-i18n = "3.1.5"

@@ -14,6 +14,7 @@
 
 use super::{ServerEvent, ServerTask, ZedisServerState};
 use crate::connection::get_connection_manager;
+use crate::helpers::is_likely_protobuf;
 use bytes::Bytes;
 use chrono::Local;
 use gpui::{Action, Hsla, SharedString, prelude::*};
@@ -101,6 +102,8 @@ pub enum DataFormat {
     Zstd,
     Snappy,
     MessagePack,
+    ProtobufRaw,
+    Protobuf,
 }
 
 impl DataFormat {
@@ -119,6 +122,8 @@ impl DataFormat {
             DataFormat::Snappy => "snappy",
             DataFormat::Zstd => "zstd",
             DataFormat::MessagePack => "messagepack",
+            DataFormat::ProtobufRaw => "protobuf",
+            DataFormat::Protobuf => "protobuf",
         }
     }
 }
@@ -197,6 +202,8 @@ pub fn detect_format(bytes: &[u8]) -> (DataFormat, Option<SharedString>) {
             (DataFormat::Svg, Some("image/svg+xml".to_string().into()))
         } else if is_valid_messagepack(bytes) {
             (DataFormat::MessagePack, None)
+        } else if is_likely_protobuf(bytes) {
+            (DataFormat::ProtobufRaw, Some("application/x-protobuf".to_string().into()))
         } else {
             (DataFormat::Bytes, None)
         };

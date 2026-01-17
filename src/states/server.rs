@@ -28,12 +28,14 @@ use std::sync::Arc;
 use tracing::debug;
 use tracing::error;
 use uuid::Uuid;
+use protobuf::ProtobufSchema;
 use value::{KeyType, RedisValue, RedisValueData};
 
 pub mod event;
 pub mod hash;
 pub mod key;
 pub mod list;
+pub mod protobuf;
 pub mod set;
 pub mod stat;
 pub mod string;
@@ -149,6 +151,10 @@ pub struct ZedisServerState {
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
+
+    // ===== Protobuf schema state =====
+    /// Protobuf schema for decoding/encoding
+    protobuf_schema: ProtobufSchema,
 }
 
 impl ZedisServerState {
@@ -185,6 +191,8 @@ impl ZedisServerState {
         self.value = None;
         self.reset_scan();
         self.terminal = false;
+        // Clear protobuf schema when switching servers
+        self.protobuf_schema.clear();
     }
 
     /// Add new keys to the key map (deduplicating automatically)
@@ -615,5 +623,45 @@ impl ZedisServerState {
                 cx,
             );
         }
+    }
+
+    // ===== Protobuf schema operations =====
+
+    /// Get the protobuf schema
+    pub fn protobuf_schema(&self) -> &ProtobufSchema {
+        &self.protobuf_schema
+    }
+
+    /// Load .proto files and emit event
+    pub fn load_proto_files(&mut self, proto_paths: Vec<String>, cx: &mut Context<Self>) {
+        match self.protobuf_schema.load_proto_files(proto_paths) {
+            Ok(()) => {
+                let types = self.protobuf_schema.message_types().to_vec();
+                cx.emit(ServerEvent::ProtobufSchemaLoaded(types));
+                cx.notify();
+            }
+            Err(e) => {
+                self.add_error_message("load_proto".to_string(), e.to_string(), cx);
+            }
+        }
+    }
+
+    /// Set selected protobuf message type
+    pub fn set_protobuf_type(&mut self, type_name: SharedString, cx: &mut Context<Self>) {
+        self.protobuf_schema.set_selected_type(type_name.clone());
+        cx.emit(ServerEvent::ProtobufTypeSelected(type_name));
+        cx.notify();
+    }
+
+    /// Decode bytes using current protobuf schema
+    pub fn decode_protobuf(&self, bytes: &[u8]) -> Option<String> {
+        self.protobuf_schema.decode(bytes).ok()
+    }
+
+    /// Clear protobuf schema
+    pub fn clear_protobuf_schema(&mut self, cx: &mut Context<Self>) {
+        self.protobuf_schema.clear();
+        cx.emit(ServerEvent::ProtobufSchemaLoaded(vec![]));
+        cx.notify();
     }
 }
