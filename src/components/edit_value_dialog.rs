@@ -52,7 +52,7 @@ pub struct EditValueDialogParams {
     /// Server state for saving
     pub server_state: Entity<ZedisServerState>,
     /// Custom save handler (optional)
-    #[allow(dead_code)]
+    /// If provided, this callback will be used instead of the default save_bytes_value
     pub on_save: Option<Rc<dyn Fn(Bytes, &mut Window, &mut App) -> bool>>,
 }
 
@@ -82,6 +82,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     let session = Rc::new(Cell::new(session));
     let server_state = params.server_state.clone();
     let key = params.key.clone();
+    let on_save = params.on_save;
 
     // Create editor state
     let editor_session = session.clone();
@@ -102,27 +103,33 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
 
     let editor_text = Rc::new(Cell::new(initial_text.clone()));
 
-    window.open_dialog(cx, move |dialog, window, cx| {
-        // Create editor input state
-        let editor_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(default_language.name())
-                .line_number(true)
-                .indent_guides(true)
-                .tab_size(TabSize {
-                    tab_size: DEFAULT_TAB_SIZE,
-                    hard_tabs: false,
-                })
-                .searchable(true)
-                .soft_wrap(true)
-        });
+    // Create editor input state BEFORE open_dialog (only once)
+    // This prevents the input from being recreated on every render frame,
+    // which was causing set_value/focus to be called repeatedly and
+    // resetting the cursor position and triggering validation errors.
+    let editor_input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .code_editor(default_language.name())
+            .line_number(true)
+            .indent_guides(true)
+            .tab_size(TabSize {
+                tab_size: DEFAULT_TAB_SIZE,
+                hard_tabs: false,
+            })
+            .searchable(true)
+            .soft_wrap(true)
+    });
 
-        // Set initial value
-        editor_input.update(cx, |state, cx| {
-            state.set_value(initial_text.clone(), window, cx);
-        });
+    // Set initial value and focus (only once, before dialog opens)
+    editor_input.update(cx, |state, cx| {
+        state.set_value(initial_text.clone(), window, cx);
+        state.focus(window, cx);
+    });
 
-        // Subscribe to editor changes for validation
+    // Subscribe to editor changes for validation BEFORE open_dialog (only once)
+    // This prevents multiple subscriptions from being created on each render frame,
+    // which was causing race conditions and session state loss during save.
+    {
         let session_for_validation = session.clone();
         let has_error_for_validation = has_error.clone();
         let error_message_for_validation = error_message.clone();
@@ -144,6 +151,10 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             }
         })
         .detach();
+    }
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        // editor_input and subscription are now captured, not recreated each frame
 
         let title = format!("Edit: {}", key);
 
@@ -152,12 +163,14 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         let key_for_save = key.clone();
         let server_state_for_save = server_state.clone();
         let has_error_for_save = has_error.clone();
+        let on_save_for_ok = on_save.clone();
 
         // Clones for footer
         let has_error_for_footer = has_error.clone();
         let session_for_footer_save = session.clone();
         let key_for_footer = key.clone();
         let server_state_for_footer = server_state.clone();
+        let on_save_for_footer = on_save.clone();
 
         // Build format buttons
         let mut format_buttons: Vec<gpui::AnyElement> = Vec::new();
@@ -282,8 +295,16 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                     let mut s = session_for_save.take();
                     match s.build_save_bytes() {
                         Ok(bytes) => {
-                            // Save to Redis
                             let bytes = Bytes::from(bytes);
+                            // Use on_save callback if provided, otherwise fallback to save_bytes_value
+                            if let Some(ref save_fn) = on_save_for_ok {
+                                if save_fn(bytes, window, cx) {
+                                    window.close_dialog(cx);
+                                    return true;
+                                }
+                                return false;
+                            }
+                            // Fallback: save bytes value directly
                             let key = key_for_save.clone();
                             server_state_for_save.update(cx, move |state, cx| {
                                 state.save_bytes_value(key, bytes, cx);
@@ -316,6 +337,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                     let session_for_btn = session_for_footer_save.clone();
                     let key_for_btn = key_for_footer.clone();
                     let server_state_for_btn = server_state_for_footer.clone();
+                    let on_save_for_btn = on_save_for_footer.clone();
 
                     let mut buttons = vec![
                         Button::new("cancel")
@@ -332,6 +354,14 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                                 match s.build_save_bytes() {
                                     Ok(bytes) => {
                                         let bytes = Bytes::from(bytes);
+                                        // Use on_save callback if provided, otherwise fallback to save_bytes_value
+                                        if let Some(ref save_fn) = on_save_for_btn {
+                                            if save_fn(bytes, window, cx) {
+                                                window.close_dialog(cx);
+                                            }
+                                            return;
+                                        }
+                                        // Fallback: save bytes value directly
                                         let key = key_for_btn.clone();
                                         server_state_for_btn.update(cx, move |state, cx| {
                                             state.save_bytes_value(key, bytes, cx);
