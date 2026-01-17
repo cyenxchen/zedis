@@ -227,6 +227,57 @@ impl EditSession {
             return Ok(());
         }
 
+        // Special handling: switching TO MessagePack from other formats (except Json, handled above)
+        // This prevents data loss when switching through intermediate formats like Hex
+        // Strategy: Always try to parse bytes as JSON first, then convert to MessagePack.
+        // This is because in most cases, users want to "convert my data to MessagePack",
+        // not "interpret these bytes as MessagePack".
+        if fmt == EditFormat::MessagePack {
+            // First sync working_bytes from current editor content
+            let bytes = encode_from_text(&self.editor_text, self.editor_format)?;
+
+            // Try to parse bytes as JSON (either binary JSON or UTF-8 string JSON)
+            // and convert to MessagePack. Do NOT try to detect if it's already MessagePack
+            // because MessagePack can parse almost any byte sequence (e.g., '{' = 0x7b = 123).
+            let parse_result = serde_json::from_slice::<serde_json::Value>(&bytes).or_else(
+                |_| match std::str::from_utf8(&bytes) {
+                    Ok(text) => serde_json::from_str(text),
+                    Err(e) => Err(serde_json::Error::io(std::io::Error::other(e))),
+                },
+            );
+
+            let value = parse_result.map_err(|e| Error::Invalid {
+                message: format!("Cannot convert to MessagePack: {}", e),
+            })?;
+
+            self.working_bytes = rmp_serde::to_vec(&value).map_err(|e| Error::Invalid {
+                message: e.to_string(),
+            })?;
+
+            self.editor_format = fmt;
+            self.refresh_editor_text(false)?;
+            self.dirty = true;
+            return Ok(());
+        }
+
+        // Special handling: switching FROM MessagePack to other formats (except Json, handled above)
+        // working_bytes is MessagePack, convert to JSON bytes first as universal intermediate format
+        if old_format == EditFormat::MessagePack {
+            // working_bytes is MessagePack, convert to JSON bytes first
+            let value: serde_json::Value =
+                rmp_serde::from_slice(&self.working_bytes).map_err(|e| Error::Invalid {
+                    message: e.to_string(),
+                })?;
+
+            self.working_bytes =
+                serde_json::to_vec(&value).map_err(|e| Error::Invalid { message: e.to_string() })?;
+
+            self.editor_format = fmt;
+            self.refresh_editor_text(false)?;
+            self.dirty = true;
+            return Ok(());
+        }
+
         // Other format switches use byte-level conversion
         let bytes = encode_from_text(&self.editor_text, self.editor_format)?;
 
@@ -624,5 +675,116 @@ mod tests {
         let decompressed =
             decompress(&saved, CompressionFormat::Gzip, MAX_DECOMPRESS_BYTES).expect("decompress failed");
         assert_eq!(decompressed, b"hello universe");
+    }
+
+    #[test]
+    fn test_format_switch_json_hex_msgpack_no_data_loss() {
+        // Test that JSON → Hex → MessagePack → JSON preserves data
+        // This is the exact scenario reported in the bug
+
+        let json = r#"{"key": "value", "number": 42}"#;
+        let mut session = EditSession::new("test:key".into(), Bytes::from(json));
+        session.detect_and_init().expect("init failed");
+
+        // Should detect as JSON
+        assert_eq!(session.editor_format, EditFormat::Json);
+        assert!(session.editor_text.contains("\"key\""));
+        assert!(session.editor_text.contains("\"value\""));
+
+        // Switch to Hex - should show hex representation of JSON bytes
+        session
+            .set_editor_format(EditFormat::Hex)
+            .expect("json to hex switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Hex);
+        // JSON starts with '{' which is 0x7b
+        assert!(session.editor_text.starts_with("7b"));
+
+        // Switch to MessagePack - should convert JSON data to MessagePack, NOT interpret hex as msgpack
+        session
+            .set_editor_format(EditFormat::MessagePack)
+            .expect("hex to msgpack switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::MessagePack);
+        // MessagePack editor shows JSON text, data should be preserved
+        assert!(session.editor_text.contains("\"key\""));
+        assert!(session.editor_text.contains("\"value\""));
+        assert!(session.editor_text.contains("42"));
+
+        // Switch back to JSON - data should still be intact
+        session
+            .set_editor_format(EditFormat::Json)
+            .expect("msgpack to json switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Json);
+        assert!(session.editor_text.contains("\"key\""));
+        assert!(session.editor_text.contains("\"value\""));
+        assert!(session.editor_text.contains("42"));
+
+        // Switch back to Hex - should show same hex as before
+        session
+            .set_editor_format(EditFormat::Hex)
+            .expect("json to hex switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Hex);
+        assert!(session.editor_text.starts_with("7b"));
+    }
+
+    #[test]
+    fn test_format_switch_msgpack_hex_json_no_data_loss() {
+        // Test that MessagePack → Hex → JSON → MessagePack preserves data
+
+        let original = serde_json::json!({"name": "test", "items": [1, 2, 3]});
+        let msgpack = rmp_serde::to_vec(&original).expect("msgpack encode failed");
+
+        let mut session = EditSession::new("test:key".into(), Bytes::from(msgpack));
+        session.detect_and_init().expect("init failed");
+
+        // Should detect as MessagePack
+        assert_eq!(session.editor_format, EditFormat::MessagePack);
+        assert!(session.editor_text.contains("\"name\""));
+        assert!(session.editor_text.contains("\"items\""));
+
+        // Switch to Hex - should show hex of MessagePack bytes
+        session
+            .set_editor_format(EditFormat::Hex)
+            .expect("msgpack to hex switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Hex);
+
+        // Switch to JSON - should show the data as JSON
+        session
+            .set_editor_format(EditFormat::Json)
+            .expect("hex to json switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Json);
+        assert!(session.editor_text.contains("\"name\""));
+        assert!(session.editor_text.contains("\"items\""));
+
+        // Switch back to MessagePack - data should be preserved
+        session
+            .set_editor_format(EditFormat::MessagePack)
+            .expect("json to msgpack switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::MessagePack);
+        assert!(session.editor_text.contains("\"name\""));
+        assert!(session.editor_text.contains("\"items\""));
+    }
+
+    #[test]
+    fn test_format_switch_text_hex_msgpack() {
+        // Test switching from Text (non-JSON) through Hex to MessagePack
+        // This should fail gracefully since plain text can't be converted to MessagePack
+
+        let mut session = EditSession::new("test:key".into(), Bytes::from("plain text here"));
+        session.detect_and_init().expect("init failed");
+
+        assert_eq!(session.editor_format, EditFormat::Text);
+
+        // Switch to Hex
+        session
+            .set_editor_format(EditFormat::Hex)
+            .expect("text to hex switch should succeed");
+        assert_eq!(session.editor_format, EditFormat::Hex);
+
+        // Switch to MessagePack should fail (plain text is not valid JSON or MessagePack)
+        let result = session.set_editor_format(EditFormat::MessagePack);
+        assert!(result.is_err());
+
+        // Format should remain as Hex
+        assert_eq!(session.editor_format, EditFormat::Hex);
     }
 }
