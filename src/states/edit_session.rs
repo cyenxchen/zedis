@@ -261,13 +261,13 @@ impl EditSession {
         }
 
         // Special handling: switching FROM MessagePack to other formats (except Json, handled above)
-        // working_bytes is MessagePack, convert to JSON bytes first as universal intermediate format
+        // Parse from editor_text (JSON) instead of working_bytes to preserve user edits
         if old_format == EditFormat::MessagePack {
-            // working_bytes is MessagePack, convert to JSON bytes first
-            let value: serde_json::Value =
-                rmp_serde::from_slice(&self.working_bytes).map_err(|e| Error::Invalid {
-                    message: e.to_string(),
-                })?;
+            // Parse from editor_text (which is JSON representation of the MessagePack data)
+            // This preserves user edits that haven't been synced to working_bytes yet
+            let value: serde_json::Value = serde_json::from_str(&self.editor_text).map_err(|e| Error::Invalid {
+                message: format!("Invalid JSON: {}", e),
+            })?;
 
             self.working_bytes =
                 serde_json::to_vec(&value).map_err(|e| Error::Invalid { message: e.to_string() })?;
