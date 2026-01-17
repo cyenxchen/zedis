@@ -250,19 +250,20 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             .title(title)
             .overlay(true)
             .overlay_closable(false)
-            .min_w(px(600.0))
+            .min_w(px(700.0))
             .max_w(px(1200.0))
             .child(
                 v_flex()
                     .gap_2()
                     .child(
-                        // Format and compression selectors
+                        // Format and compression selectors (single row layout)
                         h_flex()
                             .gap_4()
                             .child(
                                 h_flex()
                                     .gap_2()
                                     .items_center()
+                                    .flex_shrink_0()
                                     .child(Label::new("Format:"))
                                     .children(format_buttons),
                             )
@@ -270,6 +271,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                                 h_flex()
                                     .gap_2()
                                     .items_center()
+                                    .flex_shrink_0()
                                     .child(Label::new("Compression:"))
                                     .children(compression_buttons),
                             ),
