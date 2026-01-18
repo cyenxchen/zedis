@@ -202,6 +202,9 @@ impl ZedisSidebar {
                             let route = if is_home { Route::Home } else { Route::Editor };
 
                             view.update(cx, |this, cx| {
+                                let preset_credentials =
+                                    cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+
                                 // Update global route
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
                                     store.update(cx, |state, cx| {
@@ -210,7 +213,7 @@ impl ZedisSidebar {
                                 });
 
                                 this.server_state.update(cx, |state, cx| {
-                                    state.select(server_id.clone(), 0, cx);
+                                    state.select(server_id.clone(), 0, preset_credentials, cx);
                                 });
                             });
                         })

@@ -17,8 +17,8 @@ use crate::{
     connection::RedisClientDescription,
     helpers::humanize_keystroke,
     states::{
-        DataFormat, ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisServerState, i18n_common, i18n_sidebar,
-        i18n_status_bar,
+        DataFormat, ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_common,
+        i18n_sidebar, i18n_status_bar,
     },
 };
 use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
@@ -278,9 +278,10 @@ impl ZedisStatusBar {
             |view, _state, event: &SelectEvent<Vec<DbInfo>>, _window, cx| match event {
                 SelectEvent::Confirm(value) => {
                     if let Some(db) = value {
+                        let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
                         view.server_state.update(cx, |state, cx| {
                             let server_id = state.server_id().to_string();
-                            state.select(server_id.into(), *db, cx);
+                            state.select(server_id.into(), *db, preset_credentials, cx);
                         });
                     }
                 }

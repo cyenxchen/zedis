@@ -13,9 +13,10 @@
 // limitations under the License.
 
 use super::{
-    async_connection::{RedisAsyncConn, open_single_connection, query_async_masters},
+    async_connection::{AuthSource, RedisAsyncConn, is_auth_error, open_single_connection, query_async_masters, try_open_with_preset_credentials},
     config::{RedisServer, get_config},
 };
+use crate::states::PresetCredential;
 use crate::error::Error;
 use dashmap::DashMap;
 use gpui::SharedString;
@@ -335,13 +336,14 @@ impl ConnectionManager {
         }
     }
     /// Discovers Redis nodes and server type based on initial configuration.
-    async fn get_redis_nodes(&self, name: &str) -> Result<(Vec<RedisNode>, ServerType)> {
+    async fn get_redis_nodes(&self, name: &str, preset_credentials: Vec<PresetCredential>) -> Result<(Vec<RedisNode>, ServerType, AuthSource)> {
         let config = get_config(name)?;
-        let (mut conn, server_type) = {
-            let conn = match open_single_connection(&config, 0).await {
-                Ok(conn) => conn,
+        let (mut conn, server_type, auth_source) = {
+            let (conn, auth_source) = match try_open_with_preset_credentials(&config, 0, preset_credentials).await {
+                Ok((conn, auth_source)) => (conn, auth_source),
                 Err(e) => {
-                    if !e.to_string().contains("AuthenticationFailed") {
+                    let is_auth = is_auth_error(&e);
+                    if !is_auth {
                         error!("detect server type failed: {e:?}, use standalone mode");
                         return Ok((
                             vec![RedisNode {
@@ -350,29 +352,37 @@ impl ConnectionManager {
                                 ..Default::default()
                             }],
                             ServerType::Standalone,
+                            AuthSource::None,
                         ));
                     }
                     // sentinel without password
                     // detect server type again
                     let mut tmp_config = config.clone();
                     tmp_config.password = None;
-                    open_single_connection(&tmp_config, 0).await?
+                    let conn = open_single_connection(&tmp_config, 0).await?;
+                    (conn, AuthSource::None)
                 }
             };
             let server_type = detect_server_type(conn.clone()).await?;
-            (conn, server_type)
+            (conn, server_type, auth_source)
         };
         match server_type {
             ServerType::Cluster => {
                 // Fetch cluster topology
                 let nodes: String = cmd("CLUSTER").arg("NODES").query_async(&mut conn).await?;
                 // Parse nodes and convert to RedisNode
+                // For cluster, apply credential from auth_source if it's a preset
                 let nodes = parse_cluster_nodes(&nodes)?
                     .iter()
                     .map(|item| {
                         let mut tmp_config = config.clone();
                         tmp_config.port = item.port;
                         tmp_config.host = item.ip.clone();
+                        // Apply preset credential to cluster nodes
+                        if let AuthSource::Preset(_, ref cred) = auth_source {
+                            tmp_config.username = cred.username.clone();
+                            tmp_config.password = Some(cred.password.clone());
+                        }
 
                         RedisNode {
                             server: tmp_config,
@@ -381,7 +391,7 @@ impl ConnectionManager {
                         }
                     })
                     .collect();
-                Ok((nodes, server_type))
+                Ok((nodes, server_type, auth_source))
             }
             ServerType::Sentinel => {
                 // let mut conn = client.get_multiplexed_async_connection().await?;
@@ -415,6 +425,11 @@ impl ConnectionManager {
                     let mut tmp_config = config.clone();
                     tmp_config.host = ip.clone();
                     tmp_config.port = port;
+                    // Apply preset credential to sentinel nodes
+                    if let AuthSource::Preset(_, ref cred) = auth_source {
+                        tmp_config.username = cred.username.clone();
+                        tmp_config.password = Some(cred.password.clone());
+                    }
 
                     nodes.push(RedisNode {
                         server: tmp_config,
@@ -430,28 +445,38 @@ impl ConnectionManager {
                     });
                 }
 
-                Ok((nodes, server_type))
+                Ok((nodes, server_type, auth_source))
             }
-            _ => Ok((
-                vec![RedisNode {
-                    server: config.clone(),
-                    role: NodeRole::Master,
-                    ..Default::default()
-                }],
-                server_type,
-            )),
+            _ => {
+                // For standalone, apply preset credential
+                let mut server = config.clone();
+                if let AuthSource::Preset(_, ref cred) = auth_source {
+                    server.username = cred.username.clone();
+                    server.password = Some(cred.password.clone());
+                }
+                Ok((
+                    vec![RedisNode {
+                        server,
+                        role: NodeRole::Master,
+                        ..Default::default()
+                    }],
+                    server_type,
+                    auth_source,
+                ))
+            }
         }
     }
     pub fn remove_client(&self, name: &str) {
         self.clients.remove(name);
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
-    pub async fn get_client(&self, server_id: &str, db: usize) -> Result<RedisClient> {
+    /// Returns the client and authentication source.
+    pub async fn get_client(&self, server_id: &str, db: usize, preset_credentials: Vec<PresetCredential>) -> Result<(RedisClient, AuthSource)> {
         let key = format!("{}:{}", server_id, db);
         if let Some(client) = self.clients.get(&key) {
-            return Ok(client.clone());
+            return Ok((client.clone(), AuthSource::Config));
         }
-        let (nodes, server_type) = self.get_redis_nodes(server_id).await?;
+        let (nodes, server_type, auth_source) = self.get_redis_nodes(server_id, preset_credentials).await?;
         let client = match server_type {
             ServerType::Cluster => {
                 let addrs: Vec<String> = nodes.iter().map(|n| n.server.get_connection_url()).collect();
@@ -510,11 +535,12 @@ impl ConnectionManager {
 
         // Cache the client
         self.clients.insert(key, client.clone());
-        Ok(client)
+        Ok((client, auth_source))
     }
     /// Shorthand to get an async connection directly.
+    /// Uses empty preset credentials since connection should already be cached.
     pub async fn get_connection(&self, server_id: &str, db: usize) -> Result<RedisAsyncConn> {
-        let client = self.get_client(server_id, db).await?;
+        let (client, _) = self.get_client(server_id, db, vec![]).await?;
         Ok(client.connection.clone())
     }
 }

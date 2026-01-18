@@ -14,6 +14,7 @@
 
 use super::config::RedisServer;
 use crate::error::Error;
+use crate::states::PresetCredential;
 use dashmap::DashMap;
 use futures::future::try_join_all;
 use redis::{
@@ -25,6 +26,17 @@ use redis::{
 use std::{sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// Authentication source for connection
+#[derive(Debug, Clone, PartialEq)]
+pub enum AuthSource {
+    /// Used server config credentials
+    Config,
+    /// Used preset credential (index in list)
+    Preset(usize, PresetCredential),
+    /// No authentication required
+    None,
+}
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -53,6 +65,8 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
     }
+    // Verify connection with PING (this will fail if authentication is required)
+    let _: () = cmd("PING").query_async(&mut conn).await?;
     CONNECTION_POOL.insert(key, conn.clone());
     Ok(conn)
 }
@@ -65,6 +79,68 @@ fn open_single_client(config: &RedisServer) -> Result<Client> {
         Client::open(url)?
     };
     Ok(client)
+}
+
+/// Check if an error is an authentication error
+pub fn is_auth_error(e: &Error) -> bool {
+    let msg = e.to_string();
+    msg.contains("AuthenticationFailed")
+        || msg.contains("NOAUTH")
+        || msg.contains("WRONGPASS")
+        || msg.contains("invalid username-password")
+        || msg.contains("invalid password")
+}
+
+/// Try to open connection with preset credentials fallback
+///
+/// 1. First try with original config
+/// 2. If auth error and config has no password, try preset credentials in order
+/// 3. Return the connection and authentication source
+pub async fn try_open_with_preset_credentials(
+    config: &RedisServer,
+    db: usize,
+    preset_credentials: Vec<PresetCredential>,
+) -> Result<(MultiplexedConnection, AuthSource)> {
+    // First try with original config
+    match open_single_connection(config, db).await {
+        Ok(conn) => {
+            let source = if config.password.is_some() {
+                AuthSource::Config
+            } else {
+                AuthSource::None
+            };
+            return Ok((conn, source));
+        }
+        Err(e) => {
+            let is_auth = is_auth_error(&e);
+            // Check if it's an authentication error
+            if !is_auth {
+                return Err(e);
+            }
+            // If server has password configured but failed, don't try preset credentials
+            if config.password.is_some() {
+                return Err(e);
+            }
+        }
+    }
+
+    // Try preset credentials in order
+    let mut last_error = None;
+    for (index, credential) in preset_credentials.iter().enumerate() {
+        let test_config = config.with_credential(credential);
+        match open_single_connection(&test_config, db).await {
+            Ok(conn) => {
+                return Ok((conn, AuthSource::Preset(index, credential.clone())));
+            }
+            Err(e) => {
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| Error::Invalid {
+        message: "Server requires authentication".to_string(),
+    }))
 }
 
 /// A wrapper enum for Redis asynchronous connections.

@@ -745,10 +745,16 @@ impl Render for ZedisServers {
                 // Card click handler - connect to server and navigate to editor
                 let handle_select_server = cx.listener(move |this, _, _, cx| {
                     let select_server_id = select_server_id.clone();
+                    let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+                    info!(
+                        "handle_select_server: server_id={}, preset_credentials_count={}",
+                        select_server_id,
+                        preset_credentials.len()
+                    );
 
                     // Connect to server
                     this.server_state.update(cx, |state, cx| {
-                        state.select(select_server_id.into(), 0, cx);
+                        state.select(select_server_id.into(), 0, preset_credentials, cx);
                     });
 
                     // Navigate to editor view

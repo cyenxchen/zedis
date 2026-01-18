@@ -14,9 +14,10 @@
 
 use crate::{
     helpers::get_or_create_config_dir,
-    states::{ZedisGlobalStore, i18n_settings, update_app_state_and_save},
+    states::{PresetCredential, ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{Entity, Subscription, Window, prelude::*};
+use tracing::info;
 use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
@@ -29,7 +30,28 @@ pub struct ZedisSettingEditor {
     key_separator_state: Entity<InputState>,
     max_truncate_length_state: Entity<InputState>,
     config_dir_state: Entity<InputState>,
+    preset_credentials_state: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Convert credentials to display text (newline-separated, format: password or username:password)
+fn credentials_to_text(credentials: &[PresetCredential]) -> String {
+    credentials
+        .iter()
+        .map(|c| match &c.username {
+            Some(u) => format!("{}:{}", u, c.password),
+            None => c.password.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Parse text to credentials (newline-separated, format: password or username:password)
+fn text_to_credentials(text: &str) -> Vec<PresetCredential> {
+    text.lines()
+        .map(|s| s.trim())
+        .filter_map(PresetCredential::from_str)
+        .collect()
 }
 
 impl ZedisSettingEditor {
@@ -38,6 +60,9 @@ impl ZedisSettingEditor {
         let max_key_tree_depth = store.max_key_tree_depth();
         let key_separator = store.key_separator().to_string();
         let max_truncate_length = store.max_truncate_length();
+        let preset_credentials = store.preset_credentials();
+        let preset_credentials_text = credentials_to_text(&preset_credentials);
+
         let max_key_tree_depth_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_key_tree_depth_placeholder"))
@@ -52,6 +77,12 @@ impl ZedisSettingEditor {
             InputState::new(window, cx)
                 .placeholder(i18n_settings(cx, "max_truncate_length_placeholder"))
                 .default_value(max_truncate_length.to_string())
+        });
+        let preset_credentials_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(3, 10)
+                .placeholder(i18n_settings(cx, "preset_credentials_placeholder"))
+                .default_value(preset_credentials_text)
         });
 
         let config_dir = get_or_create_config_dir().unwrap_or_default();
@@ -117,6 +148,34 @@ impl ZedisSettingEditor {
                 }
             },
         ));
+
+        subscriptions.push(cx.subscribe_in(
+            &preset_credentials_state,
+            window,
+            |_view, state: &Entity<InputState>, event: &InputEvent, _window, cx| {
+                if let InputEvent::Blur = &event {
+                    let text = state.read(cx).value();
+                    let credentials = text_to_credentials(&text);
+                    info!(
+                        "preset_credentials Blur: text_lines={}, parsed_credentials_count={}",
+                        text.lines().count(),
+                        credentials.len()
+                    );
+                    for (i, cred) in credentials.iter().enumerate() {
+                        info!(
+                            "  credential[{}]: username={:?}, password_len={}",
+                            i,
+                            cred.username,
+                            cred.password.len()
+                        );
+                    }
+                    update_app_state_and_save(cx, "save_preset_credentials", move |state, _cx| {
+                        state.set_preset_credentials(credentials);
+                    });
+                }
+            },
+        ));
+
         let config_dir_state =
             cx.new(|cx| InputState::new(window, cx).default_value(config_dir.to_string_lossy().to_string()));
 
@@ -126,6 +185,7 @@ impl ZedisSettingEditor {
             max_truncate_length_state,
             key_separator_state,
             max_key_tree_depth_state,
+            preset_credentials_state,
         }
     }
 }
@@ -158,6 +218,11 @@ impl Render for ZedisSettingEditor {
                         field()
                             .label(i18n_settings(cx, "config_dir"))
                             .child(Input::new(&self.config_dir_state).disabled(true)),
+                    )
+                    .child(
+                        field()
+                            .label(i18n_settings(cx, "preset_credentials"))
+                            .child(Input::new(&self.preset_credentials_state)),
                     ),
             )
     }

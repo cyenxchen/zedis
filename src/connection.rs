@@ -16,6 +16,6 @@ mod async_connection;
 mod config;
 mod manager;
 
-pub use async_connection::RedisAsyncConn;
+pub use async_connection::{AuthSource, RedisAsyncConn};
 pub use config::{QueryMode, RedisServer, get_servers, save_servers};
 pub use manager::{RedisClientDescription, get_connection_manager};

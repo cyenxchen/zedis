@@ -14,7 +14,7 @@
 
 use crate::constants::SIDEBAR_WIDTH;
 use crate::error::Error;
-use crate::helpers::{get_key_tree_widths, get_or_create_config_dir};
+use crate::helpers::{decrypt, encrypt, get_key_tree_widths, get_or_create_config_dir};
 use gpui::{Action, App, AppContext, Bounds, Context, Entity, Global, Pixels};
 use gpui_component::{PixelsExt, ThemeMode};
 use locale_config::Locale;
@@ -82,6 +82,53 @@ pub enum SettingsAction {
     Editor,
 }
 
+/// Preset credential for Redis authentication, supporting Redis 6+ ACL
+#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PresetCredential {
+    /// Optional username for ACL (Redis 6+)
+    pub username: Option<String>,
+    /// Password for authentication
+    pub password: String,
+}
+
+impl std::fmt::Debug for PresetCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PresetCredential")
+            .field("username", &self.username)
+            .field("password", &format!("[{} chars]", self.password.len()))
+            .finish()
+    }
+}
+
+impl PresetCredential {
+    /// Parse from string, format: "password" or "username:password"
+    pub fn from_str(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Some((username, password)) = s.split_once(':') {
+            Some(Self {
+                username: Some(username.to_string()),
+                password: password.to_string(),
+            })
+        } else {
+            Some(Self {
+                username: None,
+                password: s.to_string(),
+            })
+        }
+    }
+
+    /// Convert to display string (masked password)
+    pub fn to_display_string(&self) -> String {
+        match &self.username {
+            Some(u) => format!("{}:****", u),
+            None => "****".to_string(),
+        }
+    }
+}
+
 const LIGHT_THEME_MODE: &str = "light";
 const DARK_THEME_MODE: &str = "dark";
 
@@ -95,6 +142,13 @@ fn get_or_create_server_config() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Encrypted preset credential for storage
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct EncryptedPresetCredential {
+    username: Option<String>,
+    password: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
     route: Route,
@@ -106,6 +160,9 @@ pub struct ZedisAppState {
     max_key_tree_depth: Option<usize>,
     key_separator: Option<String>,
     max_truncate_length: Option<usize>,
+    /// Preset credentials for auto-authentication (encrypted)
+    #[serde(default)]
+    preset_credentials: Vec<EncryptedPresetCredential>,
 }
 
 #[derive(Debug, Clone)]
@@ -147,8 +204,13 @@ pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
 impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
         let path = get_or_create_server_config()?;
-        let value = std::fs::read_to_string(path)?;
+        let value = std::fs::read_to_string(&path)?;
         let mut state: Self = toml::from_str(&value)?;
+        info!(
+            "ZedisAppState::try_new: loaded from {:?}, preset_credentials_count={}",
+            path,
+            state.preset_credentials.len()
+        );
         if state.locale.clone().unwrap_or_default().is_empty()
             && let Some((lang, _)) = Locale::current().to_string().split_once("-")
         {
@@ -246,6 +308,34 @@ impl ZedisAppState {
     }
     pub fn set_max_truncate_length(&mut self, max_truncate_length: usize) {
         self.max_truncate_length = Some(max_truncate_length);
+    }
+
+    /// Get preset credentials (decrypted)
+    pub fn preset_credentials(&self) -> Vec<PresetCredential> {
+        self.preset_credentials
+            .iter()
+            .map(|enc| {
+                let password = decrypt(&enc.password).unwrap_or(enc.password.clone());
+                PresetCredential {
+                    username: enc.username.clone(),
+                    password,
+                }
+            })
+            .collect()
+    }
+
+    /// Set preset credentials (will be encrypted)
+    pub fn set_preset_credentials(&mut self, credentials: Vec<PresetCredential>) {
+        self.preset_credentials = credentials
+            .into_iter()
+            .filter_map(|cred| {
+                let password = encrypt(&cred.password).ok()?;
+                Some(EncryptedPresetCredential {
+                    username: cred.username,
+                    password,
+                })
+            })
+            .collect();
     }
 }
 
