@@ -15,6 +15,7 @@
 use crate::{
     error::Error,
     helpers::{decrypt, encrypt, get_or_create_config_dir, is_development},
+    states::PresetCredential,
 };
 use gpui::Action;
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -134,6 +135,14 @@ impl RedisServer {
             return None;
         }
         Some(TlsCertificates { client_tls, root_cert })
+    }
+
+    /// Create a copy with specified credential
+    pub fn with_credential(&self, credential: &PresetCredential) -> Self {
+        let mut server = self.clone();
+        server.username = credential.username.clone();
+        server.password = Some(credential.password.clone());
+        server
     }
 }
 

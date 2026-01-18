@@ -135,10 +135,11 @@ impl ZedisServerState {
         let processing_server = server_id.clone();
         let processing_keyword = keyword.clone();
         let db = self.db;
+        let preset_credentials = self.preset_credentials.clone();
         self.spawn(
             ServerTask::ScanKeys,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
                 let pattern = if keyword.is_empty() {
                     "*".to_string()
                 } else {
@@ -256,10 +257,11 @@ impl ZedisServerState {
         let server_id = self.server_id.clone();
         let db = self.db;
         let pattern = format!("{}*", prefix);
+        let preset_credentials = self.preset_credentials.clone();
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
-                let client = get_connection_manager().get_client(&server_id, db).await?;
+                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
                 let count = 10_000;
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;

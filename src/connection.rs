@@ -19,6 +19,6 @@ mod ssh_cluster_connection;
 mod ssh_stream;
 mod ssh_tunnel;
 
-pub use async_connection::RedisAsyncConn;
+pub use async_connection::{AuthSource, RedisAsyncConn};
 pub use config::{QueryMode, RedisServer, get_servers, save_servers};
 pub use manager::{RedisClientDescription, get_connection_manager};

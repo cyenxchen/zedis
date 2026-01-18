@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers};
+use crate::connection::{AuthSource, QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers};
 use crate::error::Error;
 use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
@@ -26,8 +26,7 @@ use parking_lot::RwLock;
 use protobuf::ProtobufSchema;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::debug;
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
@@ -155,6 +154,10 @@ pub struct ZedisServerState {
     // ===== Protobuf schema state =====
     /// Protobuf schema for decoding/encoding
     protobuf_schema: ProtobufSchema,
+
+    // ===== Preset credentials =====
+    /// Preset credentials saved for subsequent operations (scan, refresh, etc.)
+    preset_credentials: Vec<super::PresetCredential>,
 }
 
 impl ZedisServerState {
@@ -193,6 +196,8 @@ impl ZedisServerState {
         self.terminal = false;
         // Clear protobuf schema when switching servers
         self.protobuf_schema.clear();
+        // Clear preset credentials
+        self.preset_credentials.clear();
     }
 
     /// Add new keys to the key map (deduplicating automatically)
@@ -458,6 +463,11 @@ impl ZedisServerState {
     pub fn value_key_type(&self) -> Option<KeyType> {
         self.value.as_ref().map(|value| value.key_type())
     }
+
+    /// Get the preset credentials for subsequent operations
+    pub fn preset_credentials(&self) -> Vec<super::PresetCredential> {
+        self.preset_credentials.clone()
+    }
     // ===== Server management operations =====
 
     /// Remove a server from the configuration
@@ -537,13 +547,22 @@ impl ZedisServerState {
     /// # Arguments
     /// * `server_id` - Server id to connect to
     /// * `db` - Database to connect to
+    /// * `preset_credentials` - Preset credentials for auto-authentication
     /// * `cx` - Context for spawning async tasks and state updates
-    pub fn select(&mut self, server_id: SharedString, db: usize, cx: &mut Context<Self>) {
+    pub fn select(
+        &mut self,
+        server_id: SharedString,
+        db: usize,
+        preset_credentials: Vec<super::PresetCredential>,
+        cx: &mut Context<Self>,
+    ) {
         // Only proceed if selecting a different server
         if self.server_id != server_id || self.db != db {
             self.reset();
             self.server_id = server_id.clone();
             self.db = db;
+            // Save preset credentials for subsequent operations
+            self.preset_credentials = preset_credentials.clone();
             let (query_mode, soft_wrap) = self
                 .server(server_id.as_str())
                 .map(|server_config| {
@@ -582,7 +601,9 @@ impl ZedisServerState {
             self.spawn(
                 ServerTask::SelectServer,
                 move || async move {
-                    let client = get_connection_manager().get_client(&server_id_clone, db).await?;
+                    let (client, auth_source) = get_connection_manager()
+                        .get_client(&server_id_clone, db, preset_credentials)
+                        .await?;
 
                     // Gather server metadata
                     let dbsize = client.dbsize().await?;
@@ -590,7 +611,7 @@ impl ZedisServerState {
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
                     let supports_db_selection = client.supports_db_selection();
-                    Ok((dbsize, nodes, nodes_description, version, supports_db_selection))
+                    Ok((dbsize, nodes, nodes_description, version, supports_db_selection, auth_source))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading
@@ -599,12 +620,18 @@ impl ZedisServerState {
                     }
 
                     // Update metadata if successful
-                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection)) = result {
+                    if let Ok((dbsize, nodes, nodes_description, version, supports_db_selection, auth_source)) = result
+                    {
                         this.dbsize = Some(dbsize);
                         this.nodes = nodes;
                         this.nodes_description = Arc::new(nodes_description);
                         this.version = version.into();
                         this.supports_db_selection = supports_db_selection;
+
+                        // Prompt to save credential if connected using preset
+                        if let AuthSource::Preset(_, credential) = auth_source {
+                            cx.emit(ServerEvent::CredentialSavePrompt(this.server_id.clone(), credential));
+                        }
                     };
 
                     let server_id = this.server_id.clone();

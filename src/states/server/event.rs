@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::helpers::EditorAction;
-use crate::states::{ErrorMessage, NotificationAction, ZedisServerState};
+use crate::states::{ErrorMessage, NotificationAction, PresetCredential, ZedisServerState};
 use gpui::prelude::*;
 use gpui::{EventEmitter, SharedString};
 
@@ -181,6 +181,11 @@ pub enum ServerEvent {
 
     /// List item edit dialog ready (index, bytes data)
     ListEditDialogReady(usize, Vec<u8>),
+
+    /// Prompt user to save preset credential to server config
+    /// (server_id, credential)
+    /// TODO: Implement UI handling for this event in main.rs or views
+    CredentialSavePrompt(SharedString, PresetCredential),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}
