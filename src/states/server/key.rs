@@ -139,7 +139,9 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::ScanKeys,
             move || async move {
-                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
+                let (client, _) = get_connection_manager()
+                    .get_client(&server_id, db, preset_credentials)
+                    .await?;
                 let pattern = if keyword.is_empty() {
                     "*".to_string()
                 } else {
@@ -261,7 +263,9 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::ScanPrefix,
             move || async move {
-                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
+                let (client, _) = get_connection_manager()
+                    .get_client(&server_id, db, preset_credentials)
+                    .await?;
                 let count = 10_000;
                 // let mut cursors: Option<Vec<u64>>,
                 let mut cursors: Option<Vec<u64>> = None;
@@ -592,4 +596,68 @@ impl ZedisServerState {
             cx,
         );
     }
+
+    /// Duplicates a key with automatic naming (key-1, key-2, etc.)
+    pub fn duplicate_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let source_key = key.clone();
+
+        self.spawn(
+            ServerTask::DuplicateKey,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+
+                // Find available destination name
+                let dest_key = find_available_key_name(&mut conn, &source_key).await?;
+
+                // Get TTL for the source key
+                let ttl: i64 = cmd("PTTL").arg(source_key.as_str()).query_async(&mut conn).await?;
+
+                // Use DUMP + RESTORE for compatibility with older Redis versions
+                let dump: Vec<u8> = cmd("DUMP").arg(source_key.as_str()).query_async(&mut conn).await?;
+
+                // Use 0 TTL if key is persistent (-1) or expired (-2)
+                let restore_ttl = if ttl < 0 { 0 } else { ttl };
+
+                let _: () = cmd("RESTORE")
+                    .arg(dest_key.as_str())
+                    .arg(restore_ttl)
+                    .arg(&dump)
+                    .query_async(&mut conn)
+                    .await?;
+
+                Ok(dest_key)
+            },
+            move |this, result, cx| {
+                if let Ok(new_key) = result {
+                    // Add the new key to the key tree
+                    if let Some(key_type) = this.keys.get(&key).cloned() {
+                        this.keys.insert(new_key.clone(), key_type);
+                    }
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                    this.select_key(new_key, cx);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+}
+
+/// Find an available key name with suffix (-1, -2, etc.)
+async fn find_available_key_name<C: redis::aio::ConnectionLike>(
+    conn: &mut C,
+    base_key: &str,
+) -> Result<SharedString, Error> {
+    for i in 1..=1000 {
+        let candidate = format!("{}-{}", base_key, i);
+        let exists: bool = cmd("EXISTS").arg(&candidate).query_async(conn).await?;
+        if !exists {
+            return Ok(candidate.into());
+        }
+    }
+    Err(Error::Invalid {
+        message: "Could not find available key name after 1000 attempts".to_string(),
+    })
 }

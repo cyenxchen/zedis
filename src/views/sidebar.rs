@@ -202,8 +202,7 @@ impl ZedisSidebar {
                             let route = if is_home { Route::Home } else { Route::Editor };
 
                             view.update(cx, |this, cx| {
-                                let preset_credentials =
-                                    cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+                                let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
 
                                 // Update global route
                                 cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {

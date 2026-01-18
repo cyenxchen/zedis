@@ -87,6 +87,9 @@ pub enum ServerTask {
 
     /// Save edited value back to Redis
     SaveValue,
+
+    /// Duplicate a key with automatic naming
+    DuplicateKey,
 }
 
 impl ServerTask {
@@ -116,6 +119,7 @@ impl ServerTask {
             ServerTask::AddZsetValue => "add_zset_value",
             ServerTask::RemoveZsetValue => "remove_zset_value",
             ServerTask::RemoveHashValue => "remove_hash_value",
+            ServerTask::DuplicateKey => "duplicate_key",
         }
     }
 }

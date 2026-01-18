@@ -21,10 +21,12 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Hsla, ScrollStrategy, SharedString, Subscription, Window, div, prelude::*, px,
+    App, AppContext, Corner, Entity, Hsla, MouseButton, ScrollStrategy, SharedString, Subscription, WeakEntity, Window,
+    div, prelude::*, px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
@@ -172,6 +174,7 @@ fn new_key_tree_items(
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     selected_index: Option<IndexPath>,
+    view: WeakEntity<ZedisKeyTree>,
 }
 
 impl KeyTreeDelegate {
@@ -214,7 +217,12 @@ impl ListDelegate for KeyTreeDelegate {
     ) -> Option<Self::Item> {
         let yellow = cx.theme().colors.yellow;
         let entry = self.items.get(ix.row)?;
-        let icon = if !entry.is_folder {
+        let is_folder = entry.is_folder;
+        let key_id = entry.id.clone();
+        let view = self.view.clone();
+        let selected_ix = ix;
+
+        let icon = if !is_folder {
             // Key item: Show type badge (String, List, etc.)
             self.render_key_type_badge(&entry.key_type).into_any_element()
         } else if entry.expanded {
@@ -235,7 +243,7 @@ impl ListDelegate for KeyTreeDelegate {
         };
 
         // Show child count for folders
-        let count_label = if entry.is_folder {
+        let count_label = if is_folder {
             Label::new(entry.children_count.to_string())
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
@@ -254,7 +262,38 @@ impl ListDelegate for KeyTreeDelegate {
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
                 .child(
                     h_flex()
+                        .w_full()
                         .gap_2()
+                        // Bubble phase: set right_clicked_key for non-folder keys
+                        // (capture phase already cleared it, so folder clicks stay cleared)
+                        .when(!is_folder, |this| {
+                            this.on_mouse_down(MouseButton::Right, {
+                                let key_id = key_id.clone();
+                                let view = view.clone();
+                                move |_, window, cx| {
+                                    let _ = view.update(cx, |v, cx| {
+                                        v.right_clicked_key = Some(key_id.clone());
+
+                                        // Select the key if it's not already selected
+                                        let current_key = v.server_state.read(cx).key();
+                                        if current_key.as_ref() != Some(&key_id) {
+                                            v.server_state.update(cx, |state, cx| {
+                                                state.select_key(key_id.clone(), cx);
+                                            });
+                                        }
+
+                                        // Sync List's selected index for visual highlight
+                                        let list_state = v.key_tree_list_state.clone();
+                                        list_state.update(cx, |state, cx| {
+                                            state.set_selected_index(Some(selected_ix), window, cx);
+                                            cx.notify();
+                                        });
+
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                        })
                         .child(icon)
                         .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
                         .child(count_label),
@@ -293,6 +332,9 @@ pub struct ZedisKeyTree {
 
     /// Whether to enter add key mode
     should_enter_add_key_mode: Option<bool>,
+
+    /// The key that was right-clicked (for context menu)
+    right_clicked_key: Option<SharedString>,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -353,9 +395,11 @@ impl ZedisKeyTree {
 
         info!(server_id, "Creating new key tree view");
 
+        let view_weak = cx.entity().downgrade();
         let delegate = KeyTreeDelegate {
             items: Vec::new(),
             selected_index: None,
+            view: view_weak,
         };
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
         subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
@@ -379,6 +423,7 @@ impl ZedisKeyTree {
             keyword_state,
             server_state,
             should_enter_add_key_mode: None,
+            right_clicked_key: None,
             _subscriptions: subscriptions,
         };
 
@@ -390,6 +435,7 @@ impl ZedisKeyTree {
 
     fn reset(&mut self, _cx: &mut Context<Self>) {
         self.state = KeyTreeState::default();
+        self.right_clicked_key = None;
     }
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
@@ -619,12 +665,58 @@ impl ZedisKeyTree {
         if let Some(status_view) = self.get_tree_status_view(cx) {
             return status_view.into_any_element();
         }
+
+        let view = cx.entity().downgrade();
+        let view_for_capture = cx.entity().downgrade();
+        let server_state = self.server_state.clone();
+
         div()
             .p_1()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .h_full()
             .child(List::new(&self.key_tree_list_state))
+            // Capture phase: clear right_clicked_key on right-click (before child elements)
+            // Child elements will set it back if clicking on a key
+            .capture_any_mouse_down(move |event, _, cx| {
+                if event.button == MouseButton::Right {
+                    let _ = view_for_capture.update(cx, |v, cx| {
+                        v.right_clicked_key = None;
+                        cx.notify();
+                    });
+                }
+            })
+            .context_menu({
+                move |menu, _window, cx| {
+                    // Read the latest right_clicked_key from view (Solution B)
+                    let right_clicked_key = view.upgrade().and_then(|v| v.read(cx).right_clicked_key.clone());
+
+                    if let Some(key) = right_clicked_key {
+                        let key_dup = key.clone();
+                        let key_del = key.clone();
+                        let ss_dup = server_state.clone();
+                        let ss_del = server_state.clone();
+
+                        menu.item(PopupMenuItem::new(i18n_key_tree(cx, "duplicate_key")).on_click(
+                            move |_, _window, cx| {
+                                ss_dup.update(cx, |state, cx| {
+                                    state.duplicate_key(key_dup.clone(), cx);
+                                });
+                            },
+                        ))
+                        .separator()
+                        .item(
+                            PopupMenuItem::new(i18n_key_tree(cx, "delete_key")).on_click(move |_, _window, cx| {
+                                ss_del.update(cx, |state, cx| {
+                                    state.delete_key(key_del.clone(), cx);
+                                });
+                            }),
+                        )
+                    } else {
+                        menu
+                    }
+                }
+            })
             .into_any_element()
     }
     /// Render the search/filter input bar with query mode selector

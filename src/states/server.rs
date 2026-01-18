@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::connection::{AuthSource, QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers};
+use crate::connection::{
+    AuthSource, QueryMode, RedisClientDescription, RedisServer, get_connection_manager, save_servers,
+};
 use crate::error::Error;
 use crate::helpers::unix_ts;
 use crate::states::server::event::{ServerEvent, ServerTask};
@@ -611,7 +613,14 @@ impl ZedisServerState {
                     let nodes = client.nodes();
                     let nodes_description = client.nodes_description();
                     let supports_db_selection = client.supports_db_selection();
-                    Ok((dbsize, nodes, nodes_description, version, supports_db_selection, auth_source))
+                    Ok((
+                        dbsize,
+                        nodes,
+                        nodes_description,
+                        version,
+                        supports_db_selection,
+                        auth_source,
+                    ))
                 },
                 move |this, result, cx| {
                     // Ignore if user switched to a different server while loading

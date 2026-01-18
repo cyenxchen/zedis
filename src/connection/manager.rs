@@ -13,11 +13,14 @@
 // limitations under the License.
 
 use super::{
-    async_connection::{AuthSource, RedisAsyncConn, is_auth_error, open_single_connection, query_async_masters, try_open_with_preset_credentials},
+    async_connection::{
+        AuthSource, RedisAsyncConn, is_auth_error, open_single_connection, query_async_masters,
+        try_open_with_preset_credentials,
+    },
     config::{RedisServer, get_config},
 };
-use crate::states::PresetCredential;
 use crate::error::Error;
+use crate::states::PresetCredential;
 use dashmap::DashMap;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, Role, aio::MultiplexedConnection, cluster, cmd};
@@ -336,7 +339,11 @@ impl ConnectionManager {
         }
     }
     /// Discovers Redis nodes and server type based on initial configuration.
-    async fn get_redis_nodes(&self, name: &str, preset_credentials: Vec<PresetCredential>) -> Result<(Vec<RedisNode>, ServerType, AuthSource)> {
+    async fn get_redis_nodes(
+        &self,
+        name: &str,
+        preset_credentials: Vec<PresetCredential>,
+    ) -> Result<(Vec<RedisNode>, ServerType, AuthSource)> {
         let config = get_config(name)?;
         let (mut conn, server_type, auth_source) = {
             let (conn, auth_source) = match try_open_with_preset_credentials(&config, 0, preset_credentials).await {
@@ -471,7 +478,12 @@ impl ConnectionManager {
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     /// Returns the client and authentication source.
-    pub async fn get_client(&self, server_id: &str, db: usize, preset_credentials: Vec<PresetCredential>) -> Result<(RedisClient, AuthSource)> {
+    pub async fn get_client(
+        &self,
+        server_id: &str,
+        db: usize,
+        preset_credentials: Vec<PresetCredential>,
+    ) -> Result<(RedisClient, AuthSource)> {
         let key = format!("{}:{}", server_id, db);
         if let Some(client) = self.clients.get(&key) {
             return Ok((client.clone(), AuthSource::Config));
