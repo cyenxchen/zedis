@@ -261,7 +261,9 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::RefreshRedisInfo,
             move || async move {
-                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
+                let (client, _) = get_connection_manager()
+                    .get_client(&server_id, db, preset_credentials)
+                    .await?;
                 let start = Instant::now();
                 client.ping().await?;
                 let latency = start.elapsed();

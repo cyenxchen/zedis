@@ -17,13 +17,13 @@ use crate::{
     states::{PresetCredential, ZedisGlobalStore, i18n_settings, update_app_state_and_save},
 };
 use gpui::{Entity, Subscription, Window, prelude::*};
-use tracing::info;
 use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
     v_flex,
 };
+use tracing::info;
 
 pub struct ZedisSettingEditor {
     max_key_tree_depth_state: Entity<InputState>,

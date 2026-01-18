@@ -358,37 +358,6 @@ impl ZedisEditor {
                     }))
                     .into_any_element(),
             );
-
-            // Add advanced edit button for binary/compressed data editing
-            let server_state_for_edit = self.server_state.clone();
-            let key_for_edit = key.clone();
-            btns.push(
-                Button::new("zedis-editor-edit-dialog")
-                    .ml_2()
-                    .disabled(should_show_loading)
-                    .outline()
-                    .tooltip(i18n_editor(cx, "edit_dialog_tooltip"))
-                    .icon(CustomIconName::FilePenLine)
-                    .on_click(move |_event, window, cx| {
-                        let server_state = server_state_for_edit.clone();
-                        let key = key_for_edit.clone();
-
-                        // Get bytes value from server state
-                        if let Some(bytes_value) = server_state.read(cx).value().and_then(|v| v.bytes_value()) {
-                            open_edit_value_dialog(
-                                EditValueDialogParams {
-                                    key: key.clone(),
-                                    bytes: bytes_value.bytes.clone(),
-                                    server_state: server_state.clone(),
-                                    on_save: None,
-                                },
-                                window,
-                                cx,
-                            );
-                        }
-                    })
-                    .into_any_element(),
-            );
         }
 
         // Add TTL button (or input field when in edit mode)

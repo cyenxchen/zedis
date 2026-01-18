@@ -543,7 +543,9 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::SaveValue,
             move || async move {
-                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
+                let (client, _) = get_connection_manager()
+                    .get_client(&server_id, db, preset_credentials)
+                    .await?;
                 let mut conn = client.connection();
                 let mut binding = cmd("SET");
                 let mut cmd = binding.arg(key.as_str()).arg(new_value.as_str());
@@ -608,7 +610,9 @@ impl ZedisServerState {
         self.spawn(
             ServerTask::SaveValue,
             move || async move {
-                let (client, _) = get_connection_manager().get_client(&server_id, db, preset_credentials).await?;
+                let (client, _) = get_connection_manager()
+                    .get_client(&server_id, db, preset_credentials)
+                    .await?;
                 let mut conn = client.connection();
                 let mut binding = cmd("SET");
                 let mut set_cmd = binding.arg(key.as_str()).arg(bytes_for_save.as_ref());
