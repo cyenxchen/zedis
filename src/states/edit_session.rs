@@ -239,20 +239,17 @@ impl EditSession {
             // Try to parse bytes as JSON (either binary JSON or UTF-8 string JSON)
             // and convert to MessagePack. Do NOT try to detect if it's already MessagePack
             // because MessagePack can parse almost any byte sequence (e.g., '{' = 0x7b = 123).
-            let parse_result = serde_json::from_slice::<serde_json::Value>(&bytes).or_else(
-                |_| match std::str::from_utf8(&bytes) {
+            let parse_result =
+                serde_json::from_slice::<serde_json::Value>(&bytes).or_else(|_| match std::str::from_utf8(&bytes) {
                     Ok(text) => serde_json::from_str(text),
                     Err(e) => Err(serde_json::Error::io(std::io::Error::other(e))),
-                },
-            );
+                });
 
             let value = parse_result.map_err(|e| Error::Invalid {
                 message: format!("Cannot convert to MessagePack: {}", e),
             })?;
 
-            self.working_bytes = rmp_serde::to_vec(&value).map_err(|e| Error::Invalid {
-                message: e.to_string(),
-            })?;
+            self.working_bytes = rmp_serde::to_vec(&value).map_err(|e| Error::Invalid { message: e.to_string() })?;
 
             self.editor_format = fmt;
             self.refresh_editor_text(false)?;
@@ -269,8 +266,7 @@ impl EditSession {
                 message: format!("Invalid JSON: {}", e),
             })?;
 
-            self.working_bytes =
-                serde_json::to_vec(&value).map_err(|e| Error::Invalid { message: e.to_string() })?;
+            self.working_bytes = serde_json::to_vec(&value).map_err(|e| Error::Invalid { message: e.to_string() })?;
 
             self.editor_format = fmt;
             self.refresh_editor_text(false)?;

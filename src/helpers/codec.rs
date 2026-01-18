@@ -186,20 +186,24 @@ pub fn detect(bytes: &[u8]) -> Detection {
     }
 
     // Check compression format first
-    let compression = detect_compression(bytes);
+    let mut compression = detect_compression(bytes);
     let is_utf8 = std::str::from_utf8(bytes).is_ok();
 
     // If compressed, try to decompress and detect content
-    if compression != CompressionFormat::None
-        && let Ok(decompressed) = decompress(bytes, compression, MAX_DECOMPRESS_BYTES)
-    {
-        let content = detect_content(&decompressed);
-        return Detection {
-            compression,
-            content,
-            mime: compression_mime(compression),
-            is_utf8: std::str::from_utf8(&decompressed).is_ok(),
-        };
+    if compression != CompressionFormat::None {
+        if let Ok(decompressed) = decompress(bytes, compression, MAX_DECOMPRESS_BYTES) {
+            let content = detect_content(&decompressed);
+            return Detection {
+                compression,
+                content,
+                mime: compression_mime(compression),
+                is_utf8: std::str::from_utf8(&decompressed).is_ok(),
+            };
+        } else {
+            // Decompression failed, reset compression to None
+            // This avoids misleading the caller into thinking data is compressed
+            compression = CompressionFormat::None;
+        }
     }
 
     // Detect content format directly
@@ -475,10 +479,23 @@ fn compress_snappy(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn decompress_lz4(bytes: &[u8], max_bytes: usize) -> Result<Vec<u8>> {
+    // Check declared size BEFORE decompression to prevent OOM attacks
+    if let Some(declared_size) = lz4_declared_size(bytes)
+        && declared_size > max_bytes
+    {
+        return Err(Error::Invalid {
+            message: format!(
+                "LZ4 declared size {} exceeds limit of {} bytes",
+                declared_size, max_bytes
+            ),
+        });
+    }
+
     let result = decompress_size_prepended(bytes).map_err(|e| Error::Invalid {
         message: format!("LZ4 decompression failed: {}", e),
     })?;
 
+    // Double-check actual size (in case of corrupted header)
     if result.len() > max_bytes {
         return Err(Error::Invalid {
             message: format!("Decompressed size exceeds limit of {} bytes", max_bytes),

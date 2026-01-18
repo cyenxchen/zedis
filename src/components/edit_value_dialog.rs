@@ -36,7 +36,7 @@ use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex, v_flex,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // Constants
@@ -96,9 +96,12 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     let current_format = Rc::new(Cell::new(initial_format));
     let current_compression = Rc::new(Cell::new(initial_compression));
     let has_error = Rc::new(Cell::new(false));
-    let error_message: Rc<Cell<Option<String>>> = Rc::new(Cell::new(None));
+    let error_message: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     // Create input state for editor
+    // TODO: Syntax highlighting doesn't update when format changes because
+    // gpui_component's InputState doesn't support set_language() after construction.
+    // Would need gpui_component library changes to support dynamic language switching.
     let default_language = Language::from_str(initial_format.language());
 
     let editor_text = Rc::new(Cell::new(initial_text.clone()));
@@ -147,7 +150,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                 session_for_validation.set(s);
 
                 has_error_for_validation.set(!valid);
-                error_message_for_validation.set(err);
+                *error_message_for_validation.borrow_mut() = err;
             }
         })
         .detach();
@@ -201,11 +204,11 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             // Rollback UI state on failure
                             current_format_clone.set(old_format);
                             has_error_clone.set(true);
-                            error_message_clone.set(Some(e.to_string()));
+                            *error_message_clone.borrow_mut() = Some(e.to_string());
                         } else {
                             // Success: clear error state (don't read old error from session)
                             has_error_clone.set(false);
-                            error_message_clone.set(None);
+                            *error_message_clone.borrow_mut() = None;
 
                             // Update editor text
                             let new_text = s.editor_text.clone();
@@ -284,7 +287,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             .font_family(get_font_family())
                             .bordered(true),
                     )
-                    .when_some(error_message.take(), |this, msg| {
+                    .when_some(error_message.borrow().clone(), |this, msg| {
                         this.child(Label::new(msg).text_color(cx.theme().danger).text_sm())
                     }),
             )

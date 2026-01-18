@@ -129,7 +129,11 @@ impl ZedisServerState {
                     {
                         let list = Arc::make_mut(list_data);
                         list.size -= 1;
-                        list.values.remove(index);
+                        // Only remove from local cache if index is within bounds
+                        // (index may be out of bounds due to pagination/filtering)
+                        if index < list.values.len() {
+                            list.values.remove(index);
+                        }
                         cx.emit(ServerEvent::ValueUpdated(key_clone));
                     }
                     value.status = RedisValueStatus::Idle;
@@ -180,11 +184,13 @@ impl ZedisServerState {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                     if result.is_err()
-                        && pushed_value
                         && let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                     {
                         // Use Arc::make_mut to get mutable access (Cow behavior)
                         let list = Arc::make_mut(list_data);
+                        // Always rollback size since we always increment it optimistically
+                        list.size -= 1;
+                        // Only rollback values if we actually pushed
                         if pushed_value {
                             if is_lpush {
                                 list.values.remove(0);
@@ -192,7 +198,6 @@ impl ZedisServerState {
                                 list.values.pop();
                             }
                         }
-                        list.size -= 1;
                     }
                 }
                 cx.emit(ServerEvent::ValueUpdated(key_clone));
@@ -240,14 +245,18 @@ impl ZedisServerState {
             move || async move {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
-                // 1. Optimistic Lock Check: Get current value
-                let current_value: String = cmd("LINDEX")
+                // 1. Optimistic Lock Check: Get current value as bytes
+                // Use bytes to handle compressed/binary data correctly
+                let current_bytes: Vec<u8> = cmd("LINDEX")
                     .arg(key.as_str())
                     .arg(index)
                     .query_async(&mut conn)
                     .await?;
 
-                if current_value != original_value_clone {
+                // Convert to display string for comparison (handles decompression)
+                let current_value = bytes_to_display_string(&current_bytes);
+
+                if current_value != original_value_clone.as_ref() {
                     return Err(Error::Invalid {
                         message: format!(
                             "Value changed (expected: '{}', actual: '{}'), update aborted.",
@@ -292,14 +301,16 @@ impl ZedisServerState {
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
         };
-        value.status = RedisValueStatus::Loading;
-        cx.notify();
 
-        // Check if we have valid list data
+        // Check if we have valid list data BEFORE setting Loading status
+        // to avoid leaving status in Loading if we return early
         let current_len = match value.list_value() {
             Some(list) => list.values.len(),
             None => return,
         };
+
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
 
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -379,6 +390,9 @@ impl ZedisServerState {
         };
         value.status = RedisValueStatus::Updating;
 
+        // Save old value for rollback on failure
+        let old_value: Option<SharedString> = value.list_value().and_then(|list| list.values.get(index).cloned());
+
         // Update local state with string representation (decompress if needed for display)
         let new_string: SharedString = bytes_to_display_string(&new_bytes).into();
         if let Some(RedisValueData::List(list_data)) = value.data.as_mut() {
@@ -413,15 +427,23 @@ impl ZedisServerState {
                 if let Some(value) = this.value.as_mut() {
                     value.status = RedisValueStatus::Idle;
                 }
-                cx.emit(ServerEvent::ValueUpdated(key_clone));
-                if let Err(e) = result {
-                    // Reload value on error to sync with server
+                if let Err(e) = &result {
+                    // Rollback local state on failure
+                    if let Some(original) = old_value
+                        && let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                    {
+                        let list = Arc::make_mut(list_data);
+                        if index < list.values.len() {
+                            list.values[index] = original;
+                        }
+                    }
                     cx.emit(ServerEvent::ErrorOccurred(crate::states::ErrorMessage {
                         category: "update_list_value".into(),
                         message: e.to_string().into(),
                         created_at: crate::helpers::unix_ts(),
                     }));
                 }
+                cx.emit(ServerEvent::ValueUpdated(key_clone));
                 cx.notify();
             },
             cx,
