@@ -261,7 +261,10 @@ fn init_logger() {
 fn main() {
     init_logger();
     let app = Application::new().with_assets(assets::Assets);
-    let app_state = ZedisAppState::try_new().unwrap_or_else(|_| ZedisAppState::new());
+    let app_state = ZedisAppState::try_new().unwrap_or_else(|e| {
+        error!(error = %e, "Failed to load app state, using default state");
+        ZedisAppState::new()
+    });
     let mut server_state = ZedisServerState::new();
     match get_servers() {
         Ok(servers) => {

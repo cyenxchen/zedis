@@ -204,8 +204,12 @@ pub fn save_app_state(state: &ZedisAppState) -> Result<()> {
 impl ZedisAppState {
     pub fn try_new() -> Result<Self> {
         let path = get_or_create_server_config()?;
+        info!(path = ?path, "Loading config file");
         let value = std::fs::read_to_string(&path)?;
-        let mut state: Self = toml::from_str(&value)?;
+        let mut state: Self = toml::from_str(&value).map_err(|e| {
+            error!(error = %e, path = ?path, "Failed to parse config file");
+            e
+        })?;
         info!(
             "ZedisAppState::try_new: loaded from {:?}, preset_credentials_count={}",
             path,

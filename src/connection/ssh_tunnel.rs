@@ -242,7 +242,7 @@ async fn new_ssh_session(addr: &str, user: &str, key: Option<&str>, password: Op
         let key = if key.starts_with("~")
             && let Some(home_dir) = get_home_dir()
         {
-            format!("{}{}", home_dir.to_string_lossy(), key[1..].to_string())
+            format!("{}{}", home_dir.to_string_lossy(), &key[1..])
         } else {
             key.to_string()
         };
