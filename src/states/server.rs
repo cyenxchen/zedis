@@ -160,6 +160,14 @@ pub struct ZedisServerState {
     // ===== Preset credentials =====
     /// Preset credentials saved for subsequent operations (scan, refresh, etc.)
     preset_credentials: Vec<super::PresetCredential>,
+
+    // ===== Per-server keyword cache =====
+    /// Per-server keyword cache: (server_id:db) -> keyword
+    /// Preserves filter keywords when switching between servers
+    server_keyword_cache: AHashMap<String, SharedString>,
+
+    /// Set of currently opened server IDs (shown in sidebar)
+    opened_servers: AHashSet<SharedString>,
 }
 
 impl ZedisServerState {
@@ -184,6 +192,12 @@ impl ZedisServerState {
 
     /// Reset all state when switching to a different server
     fn reset(&mut self) {
+        // Save current server's keyword to cache before reset
+        if !self.server_id.is_empty() {
+            let cache_key = format!("{}:{}", self.server_id, self.db);
+            self.server_keyword_cache.insert(cache_key, self.keyword.clone());
+        }
+
         self.server_id = SharedString::default();
         self.version = SharedString::default();
         self.nodes = (0, 0);
@@ -451,6 +465,12 @@ impl ZedisServerState {
     pub fn key(&self) -> Option<SharedString> {
         self.key.clone()
     }
+
+    /// Get the current search keyword
+    pub fn keyword(&self) -> &SharedString {
+        &self.keyword
+    }
+
     /// Get the map of all loaded keys and their types
     pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
         &self.keys
@@ -470,7 +490,27 @@ impl ZedisServerState {
     pub fn preset_credentials(&self) -> Vec<super::PresetCredential> {
         self.preset_credentials.clone()
     }
+
+    /// Get the set of currently opened server IDs
+    pub fn opened_servers(&self) -> &AHashSet<SharedString> {
+        &self.opened_servers
+    }
+
     // ===== Server management operations =====
+
+    /// Close a server connection without deleting its configuration
+    pub fn close_server(&mut self, server_id: &str, cx: &mut Context<Self>) {
+        let server_id_shared: SharedString = server_id.to_string().into();
+        self.opened_servers.remove(&server_id_shared);
+
+        if self.server_id.as_str() == server_id {
+            self.server_id = SharedString::default();
+            self.reset();
+        }
+
+        cx.emit(ServerEvent::ServerListUpdated);
+        cx.notify();
+    }
 
     /// Remove a server from the configuration
     ///
@@ -563,6 +603,8 @@ impl ZedisServerState {
             self.reset();
             self.server_id = server_id.clone();
             self.db = db;
+            // Track opened servers for sidebar display
+            self.opened_servers.insert(server_id.clone());
             // Save preset credentials for subsequent operations
             self.preset_credentials = preset_credentials.clone();
             let (query_mode, soft_wrap) = self
@@ -646,11 +688,20 @@ impl ZedisServerState {
                     let server_id = this.server_id.clone();
                     this.server_status = RedisServerStatus::Idle;
                     cx.emit(ServerEvent::ServerInfoUpdated(server_id.clone()));
+
+                    // Restore keyword from cache for this server
+                    let cache_key = format!("{}:{}", server_id, db);
+                    if let Some(cached_keyword) = this.server_keyword_cache.get(&cache_key) {
+                        this.keyword = cached_keyword.clone();
+                    } else {
+                        this.keyword = SharedString::default();
+                    }
                     cx.notify();
 
-                    // Auto-scan keys if in All mode
-                    if this.query_mode == QueryMode::All {
-                        this.scan_keys(server_id, SharedString::default(), cx);
+                    // Use restored keyword for scanning
+                    let keyword = this.keyword.clone();
+                    if this.query_mode == QueryMode::All || !keyword.is_empty() {
+                        this.scan_keys(server_id, keyword, cx);
                     } else {
                         this.scaning = false;
                         cx.notify();

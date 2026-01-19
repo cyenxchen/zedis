@@ -732,8 +732,11 @@ impl ZedisKeyTree {
         let server_id = server_state.server_id();
         if server_id != self.state.server_id.as_str() {
             self.state.server_id = server_id.to_string().into();
+            // Sync input field with server's cached keyword
+            let keyword = server_state.keyword().clone();
+            self.state.keyword = keyword.clone();
             self.keyword_state.update(cx, |state, cx| {
-                state.set_value(SharedString::default(), window, cx);
+                state.set_value(keyword, window, cx);
             });
         }
         let query_mode = self.state.query_mode;

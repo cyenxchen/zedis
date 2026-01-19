@@ -20,16 +20,20 @@ use crate::{
         ZedisServerState, i18n_sidebar,
     },
 };
-use gpui::{Context, Corner, Entity, Pixels, SharedString, Subscription, Window, div, prelude::*, px, uniform_list};
+use gpui::{
+    Context, Corner, Entity, MouseButton, Pixels, SharedString, Subscription, Window, div, prelude::*, px,
+    uniform_list,
+};
 use gpui_component::{
     ActiveTheme, Icon, IconName, ThemeMode,
     button::{Button, ButtonVariants},
     label::Label,
     list::ListItem,
-    menu::DropdownMenu,
+    menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     tooltip::Tooltip,
     v_flex,
 };
+use crate::connection::get_connection_manager;
 use tracing::info;
 
 // Constants for UI layout
@@ -52,6 +56,9 @@ struct SidebarState {
 
     /// Currently selected server ID (empty string means home page)
     server_id: SharedString,
+
+    /// Server ID that was right-clicked (for context menu)
+    right_clicked_server_id: Option<SharedString>,
 }
 
 /// Sidebar navigation component
@@ -91,6 +98,8 @@ impl ZedisSidebar {
                 ServerEvent::ServerSelected(server_id, _) => {
                     // Update current selection highlight
                     this.state.server_id = server_id.clone();
+                    // Also refresh server list since opened_servers may have changed
+                    this.update_server_names(cx);
                 }
                 ServerEvent::ServerListUpdated => {
                     // Refresh server list when servers are added/removed/updated
@@ -127,16 +136,18 @@ impl ZedisSidebar {
     ///
     /// Rebuilds the server_names list with:
     /// - First entry: (empty, empty) for home page
-    /// - Remaining entries: (server_id, server_name) for each configured server
+    /// - Remaining entries: (server_id, server_name) for each opened server
     fn update_server_names(&mut self, cx: &mut Context<Self>) {
         // Start with home page entry
         let mut server_names = vec![(SharedString::default(), SharedString::default())];
 
         let server_state = self.server_state.read(cx);
+        let opened_servers = server_state.opened_servers();
         if let Some(servers) = server_state.servers() {
             server_names.extend(
                 servers
                     .iter()
+                    .filter(|server| opened_servers.contains(&SharedString::from(server.id.clone())))
                     .map(|server| (server.id.clone().into(), server.name.clone().into())),
             );
         }
@@ -147,12 +158,15 @@ impl ZedisSidebar {
     ///
     /// Shows:
     /// - Home page item (always first)
-    /// - All configured server items
+    /// - All opened server items
     ///
     /// Current selection is highlighted with background color and border.
     /// Clicking an item navigates to that server or home page.
+    /// Right-clicking shows a context menu to close the server.
     fn render_server_list(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
+        let view_for_capture = view.clone();
+        let view_for_menu = view.clone();
         let servers = self.state.server_names.clone();
         let current_server_id_clone = self.state.server_id.clone();
         let is_match_route = matches!(
@@ -161,8 +175,11 @@ impl ZedisSidebar {
         );
 
         let home_label = i18n_sidebar(cx, "home");
+        let close_label = i18n_sidebar(cx, "close");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
+
+        let right_clicked_server_id = self.state.right_clicked_server_id.clone();
 
         uniform_list("sidebar-redis-servers", servers.len(), move |range, _window, _cx| {
             range
@@ -180,11 +197,61 @@ impl ZedisSidebar {
                     };
 
                     let view = view.clone();
+                    let view_for_capture = view_for_capture.clone();
+                    let view_for_menu = view_for_menu.clone();
                     let tooltip_name = name.clone();
+                    let close_label = close_label.clone();
+                    let right_click_server_id = server_id.clone();
+                    let right_clicked_server_id = right_clicked_server_id.clone();
 
                     div()
                         .id(("sidebar-server-tooltip", index))
                         .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
+                        .capture_any_mouse_down(move |event, _, cx| {
+                            if event.button == MouseButton::Right {
+                                view_for_capture.update(cx, |this, cx| {
+                                    this.state.right_clicked_server_id = None;
+                                    cx.notify();
+                                });
+                            }
+                        })
+                        .context_menu({
+                            let close_label = close_label.clone();
+                            let right_clicked_server_id = right_clicked_server_id.clone();
+                            move |menu, _window, _cx| {
+                                // Only show context menu for non-home items
+                                if let Some(server_id) = right_clicked_server_id.clone() {
+                                    if server_id.is_empty() {
+                                        return menu;
+                                    }
+                                    let view = view_for_menu.clone();
+                                    let server_id_for_click = server_id.clone();
+                                    menu.item(
+                                        PopupMenuItem::new(close_label.clone()).on_click(move |_, _window, cx| {
+                                            let server_id = server_id_for_click.clone();
+                                            view.update(cx, |this, cx| {
+                                                // Close connection in connection manager
+                                                get_connection_manager().remove_client(&server_id);
+
+                                                // Update server state
+                                                this.server_state.update(cx, |state, cx| {
+                                                    state.close_server(&server_id, cx);
+                                                });
+
+                                                // Navigate to home if we're closing the current server
+                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                    store.update(cx, |state, cx| {
+                                                        state.go_to(Route::Home, cx);
+                                                    });
+                                                });
+                                            });
+                                        }),
+                                    )
+                                } else {
+                                    menu
+                                }
+                            }
+                        })
                         .child(
                             ListItem::new(("sidebar-redis-server", index))
                                 .w_full()
@@ -195,6 +262,16 @@ impl ZedisSidebar {
                                 .child(
                                     v_flex()
                                         .items_center()
+                                        .on_mouse_down(MouseButton::Right, {
+                                            let view = view.clone();
+                                            let server_id = right_click_server_id.clone();
+                                            move |_, _, cx| {
+                                                view.update(cx, |this, cx| {
+                                                    this.state.right_clicked_server_id = Some(server_id.clone());
+                                                    cx.notify();
+                                                });
+                                            }
+                                        })
                                         .child(Icon::new(IconName::LayoutDashboard))
                                         .child(Label::new(name).text_ellipsis().text_xs()),
                                 )
