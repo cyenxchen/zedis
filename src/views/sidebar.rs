@@ -27,6 +27,7 @@ use gpui_component::{
     label::Label,
     list::ListItem,
     menu::DropdownMenu,
+    tooltip::Tooltip,
     v_flex,
 };
 use tracing::info;
@@ -179,43 +180,50 @@ impl ZedisSidebar {
                     };
 
                     let view = view.clone();
+                    let tooltip_name = name.clone();
 
-                    ListItem::new(("sidebar-redis-server", index))
-                        .w_full()
-                        .when(is_current, |this| this.bg(list_active_color))
-                        .py_4()
-                        .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
-                        .when(is_current, |this| this.border_color(list_active_border_color))
+                    div()
+                        .id(("sidebar-server-tooltip", index))
+                        .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
                         .child(
-                            v_flex()
-                                .items_center()
-                                .child(Icon::new(IconName::LayoutDashboard))
-                                .child(Label::new(name).text_ellipsis().text_xs()),
-                        )
-                        .on_click(move |_, _window, cx| {
-                            // Don't do anything if already selected
-                            if is_current {
-                                return;
-                            }
+                            ListItem::new(("sidebar-redis-server", index))
+                                .w_full()
+                                .when(is_current, |this| this.bg(list_active_color))
+                                .py_4()
+                                .border_r(px(SERVER_LIST_ITEM_BORDER_WIDTH))
+                                .when(is_current, |this| this.border_color(list_active_border_color))
+                                .child(
+                                    v_flex()
+                                        .items_center()
+                                        .child(Icon::new(IconName::LayoutDashboard))
+                                        .child(Label::new(name).text_ellipsis().text_xs()),
+                                )
+                                .on_click(move |_, _window, cx| {
+                                    // Don't do anything if already selected
+                                    if is_current {
+                                        return;
+                                    }
 
-                            // Determine target route based on home/server
-                            let route = if is_home { Route::Home } else { Route::Editor };
+                                    // Determine target route based on home/server
+                                    let route = if is_home { Route::Home } else { Route::Editor };
 
-                            view.update(cx, |this, cx| {
-                                let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+                                    view.update(cx, |this, cx| {
+                                        let preset_credentials =
+                                            cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
 
-                                // Update global route
-                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                                    store.update(cx, |state, cx| {
-                                        state.go_to(route, cx);
+                                        // Update global route
+                                        cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                            store.update(cx, |state, cx| {
+                                                state.go_to(route, cx);
+                                            });
+                                        });
+
+                                        this.server_state.update(cx, |state, cx| {
+                                            state.select(server_id.clone(), 0, preset_credentials, cx);
+                                        });
                                     });
-                                });
-
-                                this.server_state.update(cx, |state, cx| {
-                                    state.select(server_id.clone(), 0, preset_credentials, cx);
-                                });
-                            });
-                        })
+                                }),
+                        )
                 })
                 .collect()
         })
