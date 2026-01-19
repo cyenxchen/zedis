@@ -276,6 +276,7 @@ fn main() {
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
         gpui_component::init(cx);
+        crate::components::init_selectable_text(cx);
 
         cx.activate(true);
         let window_bounds = if let Some(bounds) = app_state.bounds() {

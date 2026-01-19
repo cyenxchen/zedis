@@ -14,7 +14,7 @@
 
 use crate::{
     assets::CustomIconName,
-    components::{EditValueDialogParams, open_edit_value_dialog},
+    components::{EditValueDialogParams, SelectableTextState, open_edit_value_dialog},
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
@@ -51,6 +51,9 @@ pub struct ZedisEditor {
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
+
+    /// Selectable text state for key name display
+    key_text_state: Entity<SelectableTextState>,
 
     /// TTL editing state
     should_enter_ttl_edit_mode: Option<bool>,
@@ -98,8 +101,12 @@ impl ZedisEditor {
             &server_state,
             window,
             |this, server_state, event, window, cx| match event {
-                ServerEvent::KeySelected(_) => {
+                ServerEvent::KeySelected(key) => {
                     this.selected_key_at = Some(Instant::now());
+                    // Update the key text state with selected key
+                    this.key_text_state.update(cx, |state, _cx| {
+                        state.set_text(key.clone());
+                    });
                 }
                 ServerEvent::EditonActionTriggered(action) => match action {
                     EditorAction::UpdateTtl => {
@@ -136,6 +143,9 @@ impl ZedisEditor {
 
         info!("Creating new editor view");
 
+        // Initialize selectable text state for key name
+        let key_text_state = cx.new(|cx| SelectableTextState::new("", cx));
+
         Self {
             server_state,
             list_editor: None,
@@ -143,6 +153,7 @@ impl ZedisEditor {
             set_editor: None,
             zset_editor: None,
             hash_editor: None,
+            key_text_state,
             ttl_edit_mode: false,
             ttl_input_state,
             should_enter_ttl_edit_mode: None,
@@ -462,7 +473,7 @@ impl ZedisEditor {
                     .w_0()
                     .overflow_hidden()
                     .mx_2()
-                    .child(Label::new(key).text_ellipsis().whitespace_nowrap()),
+                    .child(self.key_text_state.clone()),
             )
             .children(btns)
     }
