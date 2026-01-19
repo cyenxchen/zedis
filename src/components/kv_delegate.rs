@@ -294,6 +294,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let processing = this.delegate_mut().processing.clone();
                     let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
+                    let value = crate::helpers::truncate_string(&value, 80);
                     let fetcher = fetcher.clone();
 
                     cx.stop_propagation();
