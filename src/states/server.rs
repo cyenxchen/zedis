@@ -503,6 +503,11 @@ impl ZedisServerState {
         let server_id_shared: SharedString = server_id.to_string().into();
         self.opened_servers.remove(&server_id_shared);
 
+        // Clear keyword cache for all databases of this server
+        let prefix = format!("{}:", server_id);
+        self.server_keyword_cache
+            .retain(|key, _| !key.starts_with(&prefix));
+
         if self.server_id.as_str() == server_id {
             self.server_id = SharedString::default();
             self.reset();
