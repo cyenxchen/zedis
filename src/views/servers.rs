@@ -19,7 +19,7 @@ use crate::helpers::{is_windows, validate_common_string, validate_host, validate
 use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
 use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, WindowExt,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     form::{field, v_form},
@@ -110,6 +110,11 @@ pub struct ZedisServers {
     server_insecure_tls: Rc<Cell<bool>>,
     server_ssh_tunnel: Rc<Cell<bool>>,
 
+    /// Filter input state for server search
+    filter_state: Entity<InputState>,
+    /// Current filter keyword for filtering servers
+    filter_keyword: SharedString,
+
     _subscriptions: Vec<Subscription>,
 }
 
@@ -190,6 +195,9 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
                 .validate(|s, _cx| validate_common_string(s))
         });
+        let filter_state = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(i18n_common(cx, "filter_placeholder"))
+        });
 
         let port_state_clone = port_state.clone();
         let username_state_clone = username_state.clone();
@@ -242,6 +250,12 @@ impl ZedisServers {
                 });
             }
         }));
+        subscriptions.push(cx.subscribe_in(&filter_state, window, |view, state, event, _window, cx| {
+            if let InputEvent::Change = event {
+                view.filter_keyword = state.read(cx).value();
+                cx.notify();
+            }
+        }));
         info!("Creating new servers view");
 
         Self {
@@ -264,9 +278,19 @@ impl ZedisServers {
             server_enable_tls: Rc::new(Cell::new(false)),
             server_insecure_tls: Rc::new(Cell::new(false)),
             server_ssh_tunnel: Rc::new(Cell::new(false)),
+            filter_state,
+            filter_keyword: SharedString::default(),
             _subscriptions: subscriptions,
         }
     }
+
+    /// Focus the filter input field (called when Cmd/Ctrl+F is pressed)
+    pub fn focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter_state.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
+    }
+
     /// Fill input fields with server data for editing
     ///
     fn fill_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>, server: &RedisServer) {
@@ -665,6 +689,23 @@ impl ZedisServers {
                 })
         });
     }
+
+    /// Check if a server matches the current filter keyword
+    ///
+    /// Performs case-insensitive matching against server name, host, and description
+    fn server_matches_filter(&self, server: &RedisServer) -> bool {
+        if self.filter_keyword.is_empty() {
+            return true;
+        }
+        let keyword = self.filter_keyword.to_lowercase();
+        let name_matches = server.name.to_lowercase().contains(&keyword);
+        let host_matches = server.host.to_lowercase().contains(&keyword);
+        let desc_matches = server
+            .description
+            .as_ref()
+            .is_some_and(|d| d.to_lowercase().contains(&keyword));
+        name_matches || host_matches || desc_matches
+    }
 }
 
 impl Render for ZedisServers {
@@ -694,13 +735,14 @@ impl Render for ZedisServers {
         let update_tooltip = i18n_servers(cx, "update_tooltip");
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
 
-        // Build card for each configured server
+        // Build card for each configured server (filtered by keyword)
         let children: Vec<_> = self
             .server_state
             .read(cx)
             .servers()
             .unwrap_or_default()
             .iter()
+            .filter(|server| self.server_matches_filter(server))
             .enumerate()
             .map(|(index, server)| {
                 // Clone values for use in closures
@@ -787,8 +829,8 @@ impl Render for ZedisServers {
             })
             .collect();
 
-        // Render responsive grid with server cards + add new server card
-        div()
+        // Grid with server cards
+        let grid = div()
             .grid()
             .grid_cols(cols)
             .gap_1()
@@ -807,7 +849,48 @@ impl Render for ZedisServers {
                         this.fill_inputs(window, cx, &RedisServer::default());
                         this.add_or_update_server(window, cx);
                     })),
+            );
+
+        // Search bar at bottom
+        let search_btn = Button::new("filter-search-btn")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Search)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.filter_state.update(cx, |state, cx| {
+                    state.focus(window, cx);
+                });
+            }));
+
+        let search_bar = div()
+            .h_flex()
+            .w_full()
+            .flex_shrink_0()
+            .gap_2()
+            .p_2()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                Input::new(&self.filter_state)
+                    .w(px(200.0))
+                    .suffix(search_btn)
+                    .cleanable(true),
+            );
+
+        // Main layout: scrollable grid + fixed search bar
+        div()
+            .v_flex()
+            .h_full()
+            .w_full()
+            .child(
+                div()
+                    .id("servers-grid-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(grid),
             )
+            .child(search_bar)
             .into_any_element()
     }
 }

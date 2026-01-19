@@ -16,7 +16,7 @@ use crate::{
     components::SkeletonLoading,
     connection::get_connection_manager,
     error::Error,
-    helpers::{EditorAction, get_font_family, get_key_tree_widths, redis_value_to_string},
+    helpers::{EditorAction, ServersAction, get_font_family, get_key_tree_widths, redis_value_to_string},
     states::{Route, ServerEvent, ZedisGlobalStore, ZedisServerState, save_app_state},
     views::{ZedisEditor, ZedisKeyTree, ZedisServers, ZedisSettingEditor, ZedisStatusBar},
 };
@@ -244,7 +244,7 @@ impl ZedisContent {
             })
             .clone();
 
-        div().m(px(SERVERS_MARGIN)).child(servers)
+        div().h_full().flex_1().p(px(SERVERS_MARGIN)).child(servers)
     }
     fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self
@@ -390,7 +390,18 @@ impl Render for ZedisContent {
 
         // Route 1: Server management view
         match route {
-            Route::Home => base.child(self.render_servers(window, cx)).into_any_element(),
+            Route::Home => {
+                let servers_view = self.render_servers(window, cx);
+                base.child(servers_view)
+                    .on_action(cx.listener(|this, _: &ServersAction, window, cx| {
+                        if let Some(servers) = &this.servers {
+                            servers.update(cx, |view, cx| {
+                                view.focus_filter(window, cx);
+                            });
+                        }
+                    }))
+                    .into_any_element()
+            }
             Route::Settings => base.child(self.render_settings(window, cx)).into_any_element(),
             _ => {
                 // Route 2: Loading state (show skeleton while connecting/loading)
