@@ -24,6 +24,9 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             dmg_suffix: x86_64
+    env:
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      AC_USERNAME: ${{ secrets.AC_USERNAME }}
     steps:
       - uses: actions/checkout@v6
       - name: setup node
@@ -38,7 +41,7 @@ jobs:
           cargo install cargo-bundle
           brew install create-dmg
       - name: Import Code-Signing Certificates
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
         env:
           p12_certificate: ${{ secrets.MACOS_CERTIFICATE }}
           p12_password: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -66,7 +69,7 @@ jobs:
         run: |
           cargo bundle --release --target ${{ matrix.target }} --features mimalloc
       - name: sign app
-        if: ${{ secrets.MACOS_CERTIFICATE != '' }}
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
         env:
           CERT_NAME: ${{ secrets.MACOS_CERTIFICATE_NAME }}
         run: |
@@ -94,7 +97,7 @@ jobs:
             "$DMG_NAME" \
             "$APP_PATH"
       - name: notarize dmg
-        if: ${{ secrets.AC_USERNAME != '' }}
+        if: ${{ env.AC_USERNAME != '' }}
         env:
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
@@ -108,10 +111,10 @@ jobs:
             --team-id "$AC_TEAM_ID" \
             --wait
       - name: wait for propagation
-        if: ${{ secrets.AC_USERNAME != '' }}
+        if: ${{ env.AC_USERNAME != '' }}
         run: sleep 30
       - name: staple DMG
-        if: ${{ secrets.AC_USERNAME != '' }}
+        if: ${{ env.AC_USERNAME != '' }}
         run: |
           DMG_NAME="release/${{ env.APP_NAME }}-${{ matrix.dmg_suffix }}.dmg"
           xcrun stapler staple "$DMG_NAME"
