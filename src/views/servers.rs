@@ -835,21 +835,7 @@ impl Render for ZedisServers {
             .grid_cols(cols)
             .gap_1()
             .w_full()
-            .children(children)
-            .child(
-                // "Add New Server" card at the end
-                Card::new("servers-card-add")
-                    .icon(IconName::Plus)
-                    .title(i18n_servers(cx, "add_server_title"))
-                    .bg(bg)
-                    .description(i18n_servers(cx, "add_server_description"))
-                    .actions(vec![Button::new("add").ghost().icon(CustomIconName::FilePlusCorner)])
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        // Fill with empty server data for new entry
-                        this.fill_inputs(window, cx, &RedisServer::default());
-                        this.add_or_update_server(window, cx);
-                    })),
-            );
+            .children(children);
 
         // Search bar at bottom
         let search_btn = Button::new("filter-search-btn")
@@ -862,6 +848,16 @@ impl Render for ZedisServers {
                 });
             }));
 
+        // Add server button
+        let add_btn = Button::new("add-server-btn")
+            .ghost()
+            .icon(CustomIconName::FilePlusCorner)
+            .tooltip(i18n_servers(cx, "add_tooltip"))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.fill_inputs(window, cx, &RedisServer::default());
+                this.add_or_update_server(window, cx);
+            }));
+
         let search_bar = div()
             .h_flex()
             .w_full()
@@ -871,6 +867,7 @@ impl Render for ZedisServers {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
+            .child(add_btn)
             .child(
                 Input::new(&self.filter_state)
                     .w(px(200.0))
