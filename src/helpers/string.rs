@@ -239,20 +239,3 @@ pub fn redis_value_to_string(v: &Value) -> String {
         _ => "Unsupported".to_string(),
     }
 }
-
-/// 截断字符串到指定最大长度，超出部分用省略号表示
-/// 支持 Unicode 字符，按字符数而非字节数截断
-/// max_chars 为最终显示长度（含省略号）
-pub fn truncate_string(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
-        s.to_string()
-    } else {
-        // 预留 1 个字符给省略号
-        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
-        format!("{}…", truncated)
-    }
-}

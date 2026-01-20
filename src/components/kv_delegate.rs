@@ -51,11 +51,6 @@ pub trait ZedisKvFetcher: 'static {
         false
     }
 
-    /// Returns the column index used as the primary identifier (e.g., for deletion).
-    fn primary_index(&self) -> usize {
-        0
-    }
-
     /// Returns the column indices that are readonly.
     fn readonly_columns(&self) -> Vec<usize> {
         vec![]
@@ -293,8 +288,6 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 .disabled(processing.get())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     let processing = this.delegate_mut().processing.clone();
-                    let value = fetcher.get(row_ix, fetcher.primary_index()).unwrap_or_default();
-                    let value = crate::helpers::truncate_string(&value, 80);
                     let fetcher = fetcher.clone();
 
                     cx.stop_propagation();
@@ -304,7 +297,6 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                         let message = t!(
                             "common.remove_item_prompt",
                             row = row_ix + 1,
-                            value = value,
                             locale = locale
                         );
 
