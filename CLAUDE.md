@@ -62,3 +62,6 @@ src/
 
 - Server configs stored at `~/.config/zedis/zedis.toml`
 - Window bounds, theme, locale persisted via `ZedisAppState` with 500ms debounced saves
+
+## 仓库
+默认仓库为fork仓库

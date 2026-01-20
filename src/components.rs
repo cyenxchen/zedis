@@ -17,9 +17,11 @@ mod dialog;
 mod edit_value_dialog;
 mod kv_delegate;
 mod selectable_text;
+mod skeleton_loading;
 
 pub use card::Card;
 pub use dialog::*;
 pub use edit_value_dialog::{EditValueDialogParams, open_edit_value_dialog};
 pub use kv_delegate::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher};
 pub use selectable_text::{init as init_selectable_text, SelectableTextState};
+pub use skeleton_loading::SkeletonLoading;

@@ -362,7 +362,7 @@ impl ZedisStatusBar {
         let terminal_tooltip = format!(
             "{} ({})",
             i18n_status_bar(cx, "toggle_terminal_tooltip"),
-            humanize_keystroke("cmd-j")
+            humanize_keystroke("secondary-j")
         );
         h_flex()
             .items_center()

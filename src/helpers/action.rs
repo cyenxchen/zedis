@@ -32,6 +32,11 @@ pub enum EditorAction {
     Cmd,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum ServersAction {
+    Filter,
+}
+
 pub fn humanize_keystroke(keystroke: &str) -> String {
     let parts = keystroke.split('-');
     let mut display_text = String::new();
@@ -47,7 +52,7 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
         }
 
         let symbol = match part {
-            "cmd" => {
+            "secondary" | "cmd" => {
                 #[cfg(target_os = "macos")]
                 {
                     "⌘"
@@ -112,11 +117,12 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
 
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
-        KeyBinding::new("cmd-q", MemuAction::Quit, None),
-        KeyBinding::new("cmd-s", EditorAction::Save, None),
-        KeyBinding::new("cmd-r", EditorAction::Reload, None),
-        KeyBinding::new("cmd-n", EditorAction::Create, None),
-        KeyBinding::new("cmd-t", EditorAction::UpdateTtl, None),
-        KeyBinding::new("cmd-j", EditorAction::Cmd, None),
+        KeyBinding::new("secondary-q", MemuAction::Quit, None),
+        KeyBinding::new("secondary-s", EditorAction::Save, None),
+        KeyBinding::new("secondary-r", EditorAction::Reload, None),
+        KeyBinding::new("secondary-n", EditorAction::Create, None),
+        KeyBinding::new("secondary-t", EditorAction::UpdateTtl, None),
+        KeyBinding::new("secondary-j", EditorAction::Cmd, None),
+        KeyBinding::new("secondary-f", ServersAction::Filter, None),
     ]
 }

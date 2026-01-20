@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use super::config::RedisServer;
+use super::ssh_cluster_connection::SshMultiplexedConnection;
+use super::ssh_tunnel::open_single_ssh_tunnel_connection;
 use crate::error::Error;
 use crate::states::PresetCredential;
 use dashmap::DashMap;
@@ -46,33 +48,73 @@ static DELAY: LazyLock<Option<Duration>> = LazyLock::new(|| {
     humantime::parse_duration(&value).ok()
 });
 
+/// Global connection pool that caches Redis connections.
+/// Key: (config_hash, database_number), Value: MultiplexedConnection
 static CONNECTION_POOL: LazyLock<DashMap<(u64, usize), MultiplexedConnection>> = LazyLock::new(DashMap::new);
 
+/// Opens a single Redis connection with connection pooling support.
+///
+/// This function attempts to reuse an existing connection from the pool if available
+/// and healthy. If not, it creates a new connection (either through SSH tunnel or direct).
+/// The connection is then configured to use the specified database.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration
+/// * `db` - Database number to select (0-15 typically)
+///
+/// # Returns
+///
+/// A multiplexed Redis connection connected to the specified database
 pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<MultiplexedConnection> {
+    // Generate a unique key for this connection based on config hash and database number
     let hash = config.get_hash();
     let key = (hash, db);
+    // Try to reuse an existing connection from the pool
     if let Some(conn) = CONNECTION_POOL.get(&key) {
         let mut conn = conn.clone();
+        // Verify the connection is still alive with a PING
         if let Ok(()) = cmd("PING").query_async(&mut conn).await {
             return Ok(conn.clone());
         }
     }
-    let client = open_single_client(config)?;
-    let cfg = AsyncConnectionConfig::default()
-        .set_connection_timeout(Some(CONNECTION_TIMEOUT))
-        .set_response_timeout(Some(RESPONSE_TIMEOUT));
-    let mut conn = client.get_multiplexed_async_connection_with_config(&cfg).await?;
+    // Create a new connection: SSH tunnel or direct connection
+    let mut conn = if config.is_ssh_tunnel() {
+        open_single_ssh_tunnel_connection(config).await?
+    } else {
+        let client = open_single_client(config)?;
+        // Configure connection with timeouts
+        let cfg = AsyncConnectionConfig::default()
+            .set_connection_timeout(Some(CONNECTION_TIMEOUT))
+            .set_response_timeout(Some(RESPONSE_TIMEOUT));
+        client.get_multiplexed_async_connection_with_config(&cfg).await?
+    };
+    // Select the specified database if not the default (db 0)
     if db != 0 {
         let _: () = cmd("SELECT").arg(db).query_async(&mut conn).await?;
     }
     // Verify connection with PING (this will fail if authentication is required)
     let _: () = cmd("PING").query_async(&mut conn).await?;
+    // Cache the connection in the pool for future reuse
     CONNECTION_POOL.insert(key, conn.clone());
     Ok(conn)
 }
 
+/// Creates a Redis client from the server configuration.
+///
+/// This function builds either a TLS-enabled or regular Redis client
+/// based on the configuration.
+///
+/// # Arguments
+///
+/// * `config` - Redis server configuration
+///
+/// # Returns
+///
+/// A Redis client ready to establish connections
 fn open_single_client(config: &RedisServer) -> Result<Client> {
     let url = config.get_connection_url();
+    // Build client with TLS if certificates are provided
     let client = if let Some(certificates) = config.tls_certificates() {
         Client::build_with_tls(url, certificates)?
     } else {
@@ -152,6 +194,7 @@ pub async fn try_open_with_preset_credentials(
 pub enum RedisAsyncConn {
     Single(MultiplexedConnection),
     Cluster(ClusterConnection),
+    SshCluster(ClusterConnection<SshMultiplexedConnection>),
 }
 
 impl ConnectionLike for RedisAsyncConn {
@@ -160,6 +203,7 @@ impl ConnectionLike for RedisAsyncConn {
         let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_command(cmd),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_command(cmd),
+            RedisAsyncConn::SshCluster(conn) => conn.req_packed_command(cmd),
         };
         if let Some(delay) = *DELAY {
             return Box::pin(async move {
@@ -179,6 +223,7 @@ impl ConnectionLike for RedisAsyncConn {
         let cmd_future = match self {
             RedisAsyncConn::Single(conn) => conn.req_packed_commands(cmd, offset, count),
             RedisAsyncConn::Cluster(conn) => conn.req_packed_commands(cmd, offset, count),
+            RedisAsyncConn::SshCluster(conn) => conn.req_packed_commands(cmd, offset, count),
         };
         if let Some(delay) = *DELAY {
             return Box::pin(async move {
@@ -193,6 +238,7 @@ impl ConnectionLike for RedisAsyncConn {
         match self {
             RedisAsyncConn::Single(conn) => conn.get_db(),
             RedisAsyncConn::Cluster(_) => 0,
+            RedisAsyncConn::SshCluster(conn) => conn.get_db(),
         }
     }
 }
@@ -222,6 +268,9 @@ pub(crate) async fn query_async_masters<T: FromRedisValue>(
         let current_cmd = cmds.get(index).unwrap_or(first_cmd).clone();
 
         async move {
+            if let Some(delay) = *DELAY {
+                smol::Timer::after(delay).await;
+            }
             // Establish a multiplexed async connection to the specific node.
             let mut conn = open_single_connection(&addr, db).await?;
 

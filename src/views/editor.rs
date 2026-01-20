@@ -354,7 +354,7 @@ impl ZedisEditor {
             } else {
                 i18n_editor(cx, "save_data_tooltip")
             };
-            tooltip = format!("{tooltip} ({})", humanize_keystroke("cmd-s")).into();
+            tooltip = format!("{tooltip} ({})", humanize_keystroke("secondary-s")).into();
 
             btns.push(
                 Button::new("zedis-editor-save-key")
@@ -391,7 +391,7 @@ impl ZedisEditor {
                 let ttl_tooltip: SharedString = format!(
                     "{} ({})",
                     i18n_editor(cx, "update_ttl_tooltip"),
-                    humanize_keystroke("cmd-t")
+                    humanize_keystroke("secondary-t")
                 )
                 .into();
                 Button::new("zedis-editor-ttl-btn")
@@ -413,7 +413,7 @@ impl ZedisEditor {
         let reload_tooltip: SharedString = format!(
             "{} ({})",
             i18n_editor(cx, "reload_key_tooltip"),
-            humanize_keystroke("cmd-r")
+            humanize_keystroke("secondary-r")
         )
         .into();
         // reload
