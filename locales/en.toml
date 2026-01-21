@@ -118,6 +118,7 @@ edit_dialog_tooltip = "Advanced edit (supports compression and format conversion
 no_keys_found = "No keys found"
 key_not_exists = "Key does not exist or has expired"
 search_tooltip = "Toggle key search mode"
+refresh_keys_tooltip = "Refresh keys"
 query_mode_all = "* Contains (Glob)"
 query_mode_prefix = "^ Prefix"
 query_mode_exact = "= Exact Match"

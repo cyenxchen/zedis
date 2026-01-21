@@ -197,6 +197,7 @@ impl ZedisServerState {
     }
     pub fn handle_filter(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
         self.reset_scan();
+        self.keyword = keyword.clone();
         match self.query_mode {
             QueryMode::Prefix => self.scan_prefix(keyword, cx),
             QueryMode::Exact => self.select_key(keyword, cx),

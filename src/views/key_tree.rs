@@ -788,11 +788,22 @@ impl ZedisKeyTree {
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);
+        // Refresh button
+        let refresh_btn = Button::new("key-tree-refresh-btn")
+            .outline()
+            .tooltip(i18n_key_tree(cx, "refresh_keys_tooltip"))
+            .loading(scaning)
+            .disabled(scaning)
+            .icon(CustomIconName::RotateCw)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.handle_filter(cx);
+            }));
         h_flex()
             .p_2()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(keyword_input)
+            .child(refresh_btn)
             .child(
                 Button::new("key-tree-add-btn")
                     .outline()
