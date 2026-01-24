@@ -12,28 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::connection::get_connection_manager;
 use crate::{
     assets::CustomIconName,
-    helpers::is_development,
+    connection::RedisServer,
+    helpers::{is_development, is_windows, validate_common_string, validate_host, validate_long_string},
     states::{
         FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
-        ZedisServerState, i18n_sidebar,
+        ZedisServerState, i18n_common, i18n_servers, i18n_sidebar,
     },
 };
 use gpui::{
-    Context, Corner, Entity, MouseButton, Pixels, SharedString, Subscription, Window, div, prelude::*, px,
+    App, Context, Corner, Entity, MouseButton, Pixels, SharedString, Subscription, Window, div, prelude::*, px,
     uniform_list,
 };
 use gpui_component::{
-    ActiveTheme, Icon, IconName, ThemeMode,
+    ActiveTheme, Icon, IconName, ThemeMode, WindowExt,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
+    form::{field, v_form},
+    input::{Input, InputState, NumberInput},
     label::Label,
     list::ListItem,
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
+    scroll::ScrollableElement,
     tooltip::Tooltip,
     v_flex,
 };
-use crate::connection::get_connection_manager;
+use std::{cell::Cell, rc::Rc};
 use tracing::info;
 
 // Constants for UI layout
@@ -154,6 +160,448 @@ impl ZedisSidebar {
         self.state.server_names = server_names;
     }
 
+    /// Open edit server dialog for the specified server
+    ///
+    /// Shows a form pre-filled with current server configuration.
+    /// Detects config changes and reconnects if needed.
+    fn open_edit_server_dialog(&self, server_id: SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        // 1. Get current server configuration
+        let server = self.server_state.read(cx).server(&server_id).cloned();
+        let Some(server) = server else {
+            return;
+        };
+
+        // 2. Save original config hash for change detection
+        let original_hash = server.get_hash();
+
+        // 3. Create form input states
+        let name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "name_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let host_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "host_placeholder"))
+                .validate(|s, _cx| validate_host(s))
+        });
+        let port_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "port_placeholder")));
+        let username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "username_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let password_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "password_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+                .masked(true)
+        });
+
+        let (cert_min_rows, cert_max_rows) = (2, 100);
+        let client_cert_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "client_cert_placeholder"))
+        });
+        let client_key_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "client_key_placeholder"))
+        });
+        let root_cert_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_common(cx, "root_cert_placeholder"))
+        });
+        let master_name_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "master_name_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let ssh_addr_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_addr_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let ssh_username_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_username_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+        });
+        let ssh_password_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_servers(cx, "ssh_password_placeholder"))
+                .validate(|s, _cx| validate_common_string(s))
+                .masked(true)
+        });
+        let ssh_key_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .auto_grow(cert_min_rows, cert_max_rows)
+                .placeholder(i18n_servers(cx, "ssh_key_placeholder"))
+        });
+        let description_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(i18n_common(cx, "description_placeholder"))
+                .validate(|s, _cx| validate_long_string(s))
+        });
+
+        // 4. Fill existing data into form
+        name_state.update(cx, |state, cx| {
+            state.set_value(server.name.clone(), window, cx);
+        });
+        host_state.update(cx, |state, cx| {
+            state.set_value(server.host.clone(), window, cx);
+        });
+        if server.port != 0 {
+            port_state.update(cx, |state, cx| {
+                state.set_value(server.port.to_string(), window, cx);
+            });
+        }
+        username_state.update(cx, |state, cx| {
+            state.set_value(server.username.clone().unwrap_or_default(), window, cx);
+        });
+        password_state.update(cx, |state, cx| {
+            state.set_value(server.password.clone().unwrap_or_default(), window, cx);
+        });
+        client_cert_state.update(cx, |state, cx| {
+            state.set_value(server.client_cert.clone().unwrap_or_default(), window, cx);
+        });
+        client_key_state.update(cx, |state, cx| {
+            state.set_value(server.client_key.clone().unwrap_or_default(), window, cx);
+        });
+        root_cert_state.update(cx, |state, cx| {
+            state.set_value(server.root_cert.clone().unwrap_or_default(), window, cx);
+        });
+        master_name_state.update(cx, |state, cx| {
+            state.set_value(server.master_name.clone().unwrap_or_default(), window, cx);
+        });
+        ssh_addr_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_addr.clone().unwrap_or_default(), window, cx);
+        });
+        ssh_username_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_username.clone().unwrap_or_default(), window, cx);
+        });
+        ssh_password_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_password.clone().unwrap_or_default(), window, cx);
+        });
+        ssh_key_state.update(cx, |state, cx| {
+            state.set_value(server.ssh_key.clone().unwrap_or_default(), window, cx);
+        });
+        description_state.update(cx, |state, cx| {
+            state.set_value(server.description.clone().unwrap_or_default(), window, cx);
+        });
+
+        // 5. Create TLS and SSH toggle states
+        let server_enable_tls = Rc::new(Cell::new(server.tls.unwrap_or(false)));
+        let server_insecure_tls = Rc::new(Cell::new(server.insecure.unwrap_or(false)));
+        let server_ssh_tunnel = Rc::new(Cell::new(server.ssh_tunnel.unwrap_or(false)));
+
+        // Clone states for submit handler
+        let server_state = self.server_state.clone();
+        let server_id_clone = server_id.to_string();
+        let name_state_clone = name_state.clone();
+        let host_state_clone = host_state.clone();
+        let port_state_clone = port_state.clone();
+        let username_state_clone = username_state.clone();
+        let password_state_clone = password_state.clone();
+        let client_cert_state_clone = client_cert_state.clone();
+        let client_key_state_clone = client_key_state.clone();
+        let root_cert_state_clone = root_cert_state.clone();
+        let master_name_state_clone = master_name_state.clone();
+        let ssh_addr_state_clone = ssh_addr_state.clone();
+        let ssh_username_state_clone = ssh_username_state.clone();
+        let ssh_password_state_clone = ssh_password_state.clone();
+        let ssh_key_state_clone = ssh_key_state.clone();
+        let description_state_clone = description_state.clone();
+        let server_enable_tls_for_submit = server_enable_tls.clone();
+        let server_insecure_tls_for_submit = server_insecure_tls.clone();
+        let server_ssh_tunnel_for_submit = server_ssh_tunnel.clone();
+
+        // 6. Create submit handler with change detection and reconnect logic
+        let handle_submit = Rc::new(move |window: &mut Window, cx: &mut App| {
+            let name = name_state_clone.read(cx).value();
+            let host = host_state_clone.read(cx).value();
+            let port = port_state_clone.read(cx).value().parse::<u16>().unwrap_or(6379);
+
+            if name.is_empty() || host.is_empty() {
+                return false;
+            }
+
+            let password_val = password_state_clone.read(cx).value();
+            let password = if password_val.is_empty() {
+                None
+            } else {
+                Some(password_val)
+            };
+            let username_val = username_state_clone.read(cx).value();
+            let username = if username_val.is_empty() {
+                None
+            } else {
+                Some(username_val)
+            };
+
+            let enable_tls = server_enable_tls_for_submit.get();
+            let (client_cert, client_key, root_cert) = if enable_tls {
+                let client_cert_val = client_cert_state_clone.read(cx).value();
+                let client_cert = if client_cert_val.is_empty() {
+                    None
+                } else {
+                    Some(client_cert_val)
+                };
+                let client_key_val = client_key_state_clone.read(cx).value();
+                let client_key = if client_key_val.is_empty() {
+                    None
+                } else {
+                    Some(client_key_val)
+                };
+                let root_cert_val = root_cert_state_clone.read(cx).value();
+                let root_cert = if root_cert_val.is_empty() {
+                    None
+                } else {
+                    Some(root_cert_val)
+                };
+                (client_cert, client_key, root_cert)
+            } else {
+                (None, None, None)
+            };
+
+            let insecure_tls = if server_insecure_tls_for_submit.get() {
+                Some(true)
+            } else {
+                None
+            };
+
+            let master_name_val = master_name_state_clone.read(cx).value();
+            let master_name = if master_name_val.is_empty() {
+                None
+            } else {
+                Some(master_name_val)
+            };
+
+            let desc_val = description_state_clone.read(cx).value();
+            let description = if desc_val.is_empty() { None } else { Some(desc_val) };
+
+            let ssh_tunnel = server_ssh_tunnel_for_submit.get();
+            let ssh_addr_val = ssh_addr_state_clone.read(cx).value();
+            let ssh_addr = if ssh_addr_val.is_empty() {
+                None
+            } else {
+                Some(ssh_addr_val)
+            };
+            let ssh_username_val = ssh_username_state_clone.read(cx).value();
+            let ssh_username = if ssh_username_val.is_empty() {
+                None
+            } else {
+                Some(ssh_username_val)
+            };
+            let ssh_password_val = ssh_password_state_clone.read(cx).value();
+            let ssh_password = if ssh_password_val.is_empty() {
+                None
+            } else {
+                Some(ssh_password_val)
+            };
+            let ssh_key_val = ssh_key_state_clone.read(cx).value();
+            let ssh_key = if ssh_key_val.is_empty() {
+                None
+            } else {
+                Some(ssh_key_val)
+            };
+
+            // Get current server for preserving non-editable fields
+            let current_server = server_state
+                .read(cx)
+                .server(&server_id_clone)
+                .cloned()
+                .unwrap_or_default();
+
+            // Build new server config
+            let new_server = RedisServer {
+                id: server_id_clone.clone(),
+                name: name.to_string(),
+                host: host.to_string(),
+                port,
+                username: username.map(|u| u.to_string()),
+                password: password.map(|p| p.to_string()),
+                master_name: master_name.map(|m| m.to_string()),
+                description: description.map(|d| d.to_string()),
+                tls: if enable_tls { Some(enable_tls) } else { None },
+                insecure: insecure_tls,
+                client_cert: client_cert.map(|c| c.to_string()),
+                client_key: client_key.map(|k| k.to_string()),
+                root_cert: root_cert.map(|r| r.to_string()),
+                ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
+                ssh_addr: ssh_addr.map(|a| a.to_string()),
+                ssh_username: ssh_username.map(|u| u.to_string()),
+                ssh_password: ssh_password.map(|p| p.to_string()),
+                ssh_key: ssh_key.map(|k| k.to_string()),
+                ..current_server
+            };
+
+            // Check if config has changed
+            let new_hash = new_server.get_hash();
+            let config_changed = new_hash != original_hash;
+
+            // Update server configuration
+            server_state.update(cx, |state, cx| {
+                state.update_or_insrt_server(new_server, cx);
+            });
+
+            // If config changed, reconnect
+            if config_changed {
+                info!("Server config changed, reconnecting: {}", server_id_clone);
+
+                // Clear old connection cache
+                get_connection_manager().remove_client(&server_id_clone);
+
+                // Get preset credentials
+                let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+
+                // Force reconnect with new config
+                server_state.update(cx, |state, cx| {
+                    state.reconnect(preset_credentials, cx);
+                });
+            }
+
+            window.close_dialog(cx);
+            true
+        });
+
+        // 7. Open dialog
+        let focus_handle_done = Cell::new(false);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            let title = i18n_servers(cx, "update_server_title");
+
+            // Prepare field labels
+            let name_label = i18n_common(cx, "name");
+            let host_label = i18n_common(cx, "host");
+            let port_label = i18n_common(cx, "port");
+            let username_label = i18n_common(cx, "username");
+            let password_label = i18n_common(cx, "password");
+            let tls_label = i18n_common(cx, "tls");
+            let tls_check_label = i18n_common(cx, "tls_check_label");
+            let insecure_tls_label = i18n_common(cx, "insecure_tls");
+            let insecure_tls_check_label = i18n_common(cx, "insecure_tls_check_label");
+            let client_cert_label = i18n_common(cx, "client_cert");
+            let client_key_label = i18n_common(cx, "client_key");
+            let root_cert_label = i18n_common(cx, "root_cert");
+            let description_label = i18n_common(cx, "description");
+            let master_name_label = i18n_servers(cx, "master_name");
+            let ssh_addr_label = i18n_servers(cx, "ssh_addr");
+            let ssh_username_label = i18n_servers(cx, "ssh_username");
+            let ssh_password_label = i18n_servers(cx, "ssh_password");
+            let ssh_key_label = i18n_servers(cx, "ssh_key");
+            let ssh_tunnel_label = i18n_servers(cx, "ssh_tunnel");
+            let ssh_tunnel_check_label = i18n_servers(cx, "ssh_tunnel_check_label");
+
+            dialog
+                .title(title)
+                .overlay(true)
+                .child({
+                    if !focus_handle_done.get() {
+                        name_state.clone().update(cx, |this, cx| {
+                            this.focus(window, cx);
+                        });
+                        focus_handle_done.set(true);
+                    }
+                    let mut form = v_form()
+                        .child(field().label(name_label).child(Input::new(&name_state)))
+                        .child(field().label(host_label).child(Input::new(&host_state)))
+                        .child(field().label(port_label).child(NumberInput::new(&port_state)))
+                        .child(field().label(username_label).child(Input::new(&username_state)))
+                        .child(
+                            field()
+                                .label(password_label)
+                                .child(Input::new(&password_state).mask_toggle()),
+                        )
+                        .child(field().label(tls_label).child({
+                            let server_enable_tls = server_enable_tls.clone();
+                            Checkbox::new("edit-redis-server-tls")
+                                .label(tls_check_label)
+                                .checked(server_enable_tls.get())
+                                .on_click(move |checked, _, cx| {
+                                    server_enable_tls.set(*checked);
+                                    cx.stop_propagation();
+                                })
+                        }));
+
+                    if server_enable_tls.get() {
+                        form = form
+                            .child(field().label(insecure_tls_label).child({
+                                let server_insecure_tls = server_insecure_tls.clone();
+                                Checkbox::new("edit-redis-server-insecure-tls")
+                                    .label(insecure_tls_check_label)
+                                    .checked(server_insecure_tls.get())
+                                    .on_click(move |checked, _, cx| {
+                                        server_insecure_tls.set(*checked);
+                                        cx.stop_propagation();
+                                    })
+                            }))
+                            .child(field().label(client_cert_label).child(Input::new(&client_cert_state)))
+                            .child(field().label(client_key_label).child(Input::new(&client_key_state)))
+                            .child(field().label(root_cert_label).child(Input::new(&root_cert_state)));
+                    }
+
+                    form = form.child(field().label(ssh_tunnel_label).child({
+                        let server_ssh_tunnel = server_ssh_tunnel.clone();
+                        Checkbox::new("edit-redis-server-ssh-tunnel")
+                            .label(ssh_tunnel_check_label)
+                            .checked(server_ssh_tunnel.get())
+                            .on_click(move |checked, _, cx| {
+                                server_ssh_tunnel.set(*checked);
+                                cx.stop_propagation();
+                            })
+                    }));
+
+                    if server_ssh_tunnel.get() {
+                        form = form
+                            .child(field().label(ssh_addr_label).child(Input::new(&ssh_addr_state)))
+                            .child(field().label(ssh_username_label).child(Input::new(&ssh_username_state)))
+                            .child(field().label(ssh_password_label).child(Input::new(&ssh_password_state)))
+                            .child(field().label(ssh_key_label).child(Input::new(&ssh_key_state)));
+                    }
+
+                    form = form
+                        .child(field().label(master_name_label).child(Input::new(&master_name_state)))
+                        .child(field().label(description_label).child(Input::new(&description_state)));
+
+                    div()
+                        .id("edit-servers-scrollable-container")
+                        .max_h(px(600.0))
+                        .child(form)
+                        .overflow_y_scrollbar()
+                })
+                .on_ok({
+                    let handle = handle_submit.clone();
+                    move |_, window, cx| handle(window, cx)
+                })
+                .footer({
+                    let handle = handle_submit.clone();
+                    move |_, _, _, cx| {
+                        let submit_label = i18n_common(cx, "submit");
+                        let cancel_label = i18n_common(cx, "cancel");
+
+                        let mut buttons = vec![
+                            Button::new("cancel").label(cancel_label).on_click(|_, window, cx| {
+                                window.close_dialog(cx);
+                            }),
+                            Button::new("ok").primary().label(submit_label).on_click({
+                                let handle = handle.clone();
+                                move |_, window, cx| {
+                                    handle.clone()(window, cx);
+                                }
+                            }),
+                        ];
+
+                        if is_windows() {
+                            buttons.reverse();
+                        }
+                        buttons
+                    }
+                })
+        });
+    }
+
     /// Render the scrollable server list
     ///
     /// Shows:
@@ -176,6 +624,7 @@ impl ZedisSidebar {
 
         let home_label = i18n_sidebar(cx, "home");
         let close_label = i18n_sidebar(cx, "close");
+        let edit_label = i18n_sidebar(cx, "edit");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
 
@@ -217,6 +666,7 @@ impl ZedisSidebar {
                         })
                         .context_menu({
                             let close_label = close_label.clone();
+                            let edit_label = edit_label.clone();
                             let right_clicked_server_id = right_clicked_server_id.clone();
                             move |menu, _window, _cx| {
                                 // Only show context menu for non-home items
@@ -225,10 +675,21 @@ impl ZedisSidebar {
                                         return menu;
                                     }
                                     let view = view_for_menu.clone();
-                                    let server_id_for_click = server_id.clone();
-                                    menu.item(
+                                    let view_for_edit = view_for_menu.clone();
+                                    let server_id_for_close = server_id.clone();
+                                    let server_id_for_edit = server_id.clone();
+
+                                    // Edit menu item (before close)
+                                    menu.item(PopupMenuItem::new(edit_label.clone()).on_click(move |_, window, cx| {
+                                        let server_id = server_id_for_edit.clone();
+                                        view_for_edit.update(cx, |this, cx| {
+                                            this.open_edit_server_dialog(server_id, window, cx);
+                                        });
+                                    }))
+                                    // Close menu item
+                                    .item(
                                         PopupMenuItem::new(close_label.clone()).on_click(move |_, _window, cx| {
-                                            let server_id = server_id_for_click.clone();
+                                            let server_id = server_id_for_close.clone();
                                             view.update(cx, |this, cx| {
                                                 // Close connection in connection manager
                                                 get_connection_manager().remove_client(&server_id);

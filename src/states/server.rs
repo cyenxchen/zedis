@@ -505,8 +505,7 @@ impl ZedisServerState {
 
         // Clear keyword cache for all databases of this server
         let prefix = format!("{}:", server_id);
-        self.server_keyword_cache
-            .retain(|key, _| !key.starts_with(&prefix));
+        self.server_keyword_cache.retain(|key, _| !key.starts_with(&prefix));
 
         if self.server_id.as_str() == server_id {
             self.server_id = SharedString::default();
@@ -715,6 +714,24 @@ impl ZedisServerState {
                 cx,
             );
         }
+    }
+
+    /// Force reconnect to the current server
+    ///
+    /// This is useful when server configuration has changed and we need to
+    /// re-establish the connection with new settings.
+    pub fn reconnect(&mut self, preset_credentials: Vec<super::PresetCredential>, cx: &mut Context<Self>) {
+        if self.server_id.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+
+        // Reset current state to force reconnection
+        self.reset();
+
+        // Re-select the same server
+        self.select(server_id, db, preset_credentials, cx);
     }
 
     // ===== Protobuf schema operations =====
