@@ -127,6 +127,7 @@ category = "Category"
 add_key_title = "Add Key"
 duplicate_key = "Duplicate"
 delete_key = "Delete"
+delete_selected = "Delete Selected"
 
 [status_bar]
 toggle_terminal_tooltip = "Toggle redis terminal"

@@ -294,11 +294,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
 
                     window.open_dialog(cx, move |dialog, _, cx| {
                         let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
-                        let message = t!(
-                            "common.remove_item_prompt",
-                            row = row_ix + 1,
-                            locale = locale
-                        );
+                        let message = t!("common.remove_item_prompt", row = row_ix + 1, locale = locale);
 
                         let processing = processing.clone();
                         let fetcher = fetcher.clone();

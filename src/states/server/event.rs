@@ -49,6 +49,9 @@ pub enum ServerTask {
     /// Delete a key from Redis
     DeleteKey,
 
+    /// Delete multiple keys from Redis
+    DeleteKeys,
+
     /// Scan for keys matching pattern
     ScanKeys,
 
@@ -103,6 +106,7 @@ impl ServerTask {
             ServerTask::FillKeyTypes => "fill_key_types",
             ServerTask::Selectkey => "select_key",
             ServerTask::DeleteKey => "delete_key",
+            ServerTask::DeleteKeys => "delete_keys",
             ServerTask::ScanKeys => "scan_keys",
             ServerTask::ScanPrefix => "scan_prefix",
             ServerTask::AddKey => "add_key",
@@ -190,6 +194,12 @@ pub enum ServerEvent {
     /// (server_id, credential)
     /// TODO: Implement UI handling for this event in main.rs or views
     CredentialSavePrompt(SharedString, PresetCredential),
+
+    /// Key selection has changed (multi-select)
+    KeySelectionChanged,
+
+    /// Multiple keys have been deleted (count)
+    KeysDeleted(usize),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}

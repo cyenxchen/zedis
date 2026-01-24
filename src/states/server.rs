@@ -149,6 +149,9 @@ pub struct ZedisServerState {
     /// Map of all loaded keys and their types
     keys: AHashMap<SharedString, KeyType>,
 
+    /// Set of currently selected keys for multi-selection
+    selected_keys: AHashSet<SharedString>,
+
     // ===== Error tracking =====
     /// Recent error messages (limited to MAX_ERROR_MESSAGES)
     error_messages: Arc<RwLock<Vec<ErrorMessage>>>,
@@ -188,6 +191,7 @@ impl ZedisServerState {
         self.scan_completed = false;
         self.scan_times = 0;
         self.loaded_prefixes.clear();
+        self.selected_keys.clear();
     }
 
     /// Reset all state when switching to a different server
@@ -214,6 +218,8 @@ impl ZedisServerState {
         self.protobuf_schema.clear();
         // Clear preset credentials
         self.preset_credentials.clear();
+        // Clear multi-selection
+        self.selected_keys.clear();
     }
 
     /// Add new keys to the key map (deduplicating automatically)
@@ -474,6 +480,46 @@ impl ZedisServerState {
     /// Get the map of all loaded keys and their types
     pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
         &self.keys
+    }
+
+    /// Get the set of currently selected keys
+    pub fn selected_keys(&self) -> &AHashSet<SharedString> {
+        &self.selected_keys
+    }
+
+    /// Check if a key is selected
+    pub fn is_key_selected(&self, key: &SharedString) -> bool {
+        self.selected_keys.contains(key)
+    }
+
+    /// Get the count of selected keys
+    pub fn selected_keys_count(&self) -> usize {
+        self.selected_keys.len()
+    }
+
+    /// Clear all selected keys
+    pub fn clear_selected_keys(&mut self, cx: &mut Context<Self>) {
+        self.selected_keys.clear();
+        cx.emit(ServerEvent::KeySelectionChanged);
+        cx.notify();
+    }
+
+    /// Select a range of keys (for Shift+click)
+    pub fn select_key_range(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
+        self.selected_keys.clear();
+        for key in keys {
+            self.selected_keys.insert(key);
+        }
+        cx.emit(ServerEvent::KeySelectionChanged);
+        cx.notify();
+    }
+
+    /// Set a single key as selected (clears previous selection)
+    pub fn set_single_selected_key(&mut self, key: SharedString, cx: &mut Context<Self>) {
+        self.selected_keys.clear();
+        self.selected_keys.insert(key);
+        cx.emit(ServerEvent::KeySelectionChanged);
+        cx.notify();
     }
 
     /// Get the value data for the currently selected key

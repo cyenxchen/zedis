@@ -15,11 +15,10 @@
 //! Selectable text component - supports mouse drag selection and keyboard copy
 
 use gpui::{
-    actions, point, px, quad, App, BorderStyle, Bounds, ClipboardItem, Context, CursorStyle, Edges,
-    Element, ElementId, Entity, FocusHandle, Focusable, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString, StyledText,
-    TextLayout, Window, div,
+    App, BorderStyle, Bounds, ClipboardItem, Context, CursorStyle, Edges, Element, ElementId, Entity, FocusHandle,
+    Focusable, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
+    KeyBinding, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
+    StyledText, TextLayout, Window, actions, div, point, px, quad,
 };
 use gpui_component::ActiveTheme;
 
@@ -190,11 +189,8 @@ impl Element for SelectableTextElement {
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text_style = window.text_style();
-        self.styled_text =
-            StyledText::new(self.text.clone()).with_runs(vec![text_style.to_run(self.text.len())]);
-        let (layout_id, _) = self
-            .styled_text
-            .request_layout(global_id, inspector_id, window, cx);
+        self.styled_text = StyledText::new(self.text.clone()).with_runs(vec![text_style.to_run(self.text.len())]);
+        let (layout_id, _) = self.styled_text.request_layout(global_id, inspector_id, window, cx);
         (layout_id, ())
     }
 
@@ -266,12 +262,12 @@ impl Element for SelectableTextElement {
                     return;
                 }
                 // Use unwrap_or_else to handle both Ok (inside text) and Err (outside bounds)
-                let index = text_layout
-                    .index_for_position(event.position)
-                    .unwrap_or_else(|idx| idx);
+                let index = text_layout.index_for_position(event.position).unwrap_or_else(|idx| idx);
                 state_entity.update(cx, |state, cx| {
                     // Only update if currently selecting
-                    if state.is_selecting && let Some((start, _)) = state.selection {
+                    if state.is_selecting
+                        && let Some((start, _)) = state.selection
+                    {
                         state.selection = Some((start, index));
                         cx.notify();
                     }

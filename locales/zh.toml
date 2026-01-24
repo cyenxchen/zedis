@@ -126,6 +126,7 @@ category = "类型"
 add_key_title = "添加键"
 duplicate_key = "复制"
 delete_key = "删除"
+delete_selected = "删除选中"
 
 [status_bar]
 toggle_terminal_tooltip = "切换redis控制台"

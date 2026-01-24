@@ -195,9 +195,7 @@ impl ZedisServers {
                 .placeholder(i18n_servers(cx, "master_name_placeholder"))
                 .validate(|s, _cx| validate_common_string(s))
         });
-        let filter_state = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(i18n_common(cx, "filter_placeholder"))
-        });
+        let filter_state = cx.new(|cx| InputState::new(window, cx).placeholder(i18n_common(cx, "filter_placeholder")));
 
         let port_state_clone = port_state.clone();
         let username_state_clone = username_state.clone();
@@ -250,12 +248,14 @@ impl ZedisServers {
                 });
             }
         }));
-        subscriptions.push(cx.subscribe_in(&filter_state, window, |view, state, event, _window, cx| {
-            if let InputEvent::Change = event {
-                view.filter_keyword = state.read(cx).value();
-                cx.notify();
-            }
-        }));
+        subscriptions.push(
+            cx.subscribe_in(&filter_state, window, |view, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    view.filter_keyword = state.read(cx).value();
+                    cx.notify();
+                }
+            }),
+        );
         info!("Creating new servers view");
 
         Self {
@@ -830,12 +830,7 @@ impl Render for ZedisServers {
             .collect();
 
         // Grid with server cards
-        let grid = div()
-            .grid()
-            .grid_cols(cols)
-            .gap_1()
-            .w_full()
-            .children(children);
+        let grid = div().grid().grid_cols(cols).gap_1().w_full().children(children);
 
         // Search bar at bottom
         let search_btn = Button::new("filter-search-btn")
@@ -880,13 +875,7 @@ impl Render for ZedisServers {
             .v_flex()
             .h_full()
             .w_full()
-            .child(
-                div()
-                    .id("servers-grid-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(grid),
-            )
+            .child(div().id("servers-grid-scroll").flex_1().overflow_y_scroll().child(grid))
             .child(search_bar)
             .into_any_element()
     }

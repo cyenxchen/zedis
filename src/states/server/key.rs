@@ -462,6 +462,55 @@ impl ZedisServerState {
             cx,
         );
     }
+
+    /// Deletes multiple keys in a batch operation.
+    pub fn delete_keys(&mut self, keys: Vec<SharedString>, cx: &mut Context<Self>) {
+        if keys.is_empty() {
+            return;
+        }
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let keys_to_delete = keys.clone();
+
+        self.spawn(
+            ServerTask::DeleteKeys,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                // Use pipeline for batch deletion
+                let mut pipeline = pipe();
+                for key in &keys_to_delete {
+                    pipeline.cmd("DEL").arg(key.as_str());
+                }
+                let _: Vec<i64> = pipeline.query_async(&mut conn).await?;
+                Ok(keys_to_delete)
+            },
+            move |this, result, cx| {
+                if let Ok(deleted_keys) = result {
+                    let count = deleted_keys.len();
+                    for key in &deleted_keys {
+                        this.keys.remove(key);
+                        this.selected_keys.remove(key);
+                    }
+                    // Force refresh of the key tree view
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+
+                    // Deselect if the current key was deleted
+                    if let Some(current_key) = &this.key
+                        && deleted_keys.contains(current_key)
+                    {
+                        this.key = None;
+                        this.value = None;
+                    }
+                    this.selected_keys.clear();
+                    cx.emit(ServerEvent::KeysDeleted(count));
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     /// Updates the TTL (expiration) for a key.
     pub fn update_key_ttl(&mut self, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         if ttl.is_empty() {

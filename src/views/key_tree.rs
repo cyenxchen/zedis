@@ -65,6 +65,8 @@ struct KeyTreeState {
     expanded_items: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
+    /// Anchor row index for Shift+click range selection
+    anchor_index: Option<usize>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -76,6 +78,8 @@ struct KeyTreeItem {
     expanded: bool,
     children_count: usize,
     is_folder: bool,
+    /// Whether this item is part of a multi-selection
+    selected: bool,
 }
 
 fn new_key_tree_items(
@@ -83,9 +87,11 @@ fn new_key_tree_items(
     keyword: SharedString,
     expand_all: bool,
     expanded_items: AHashSet<SharedString>,
+    selected_keys: AHashSet<SharedString>,
     separator: &str,
     max_key_tree_depth: usize,
 ) -> Vec<KeyTreeItem> {
+    let has_multi_selection = selected_keys.len() > 1;
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
@@ -102,6 +108,7 @@ fn new_key_tree_items(
                     id: key.clone(),
                     label: key.clone(),
                     key_type,
+                    selected: has_multi_selection && selected_keys.contains(&key),
                     ..Default::default()
                 },
             );
@@ -130,12 +137,14 @@ fn new_key_tree_items(
             };
             dir.push_str(k);
 
+            let item_id: SharedString = dir.clone().into();
             key_tree_item = Some(KeyTreeItem {
-                id: dir.clone().into(),
+                id: item_id.clone(),
                 label: name.clone(),
                 key_type,
                 depth: index,
                 expanded,
+                selected: has_multi_selection && selected_keys.contains(&item_id),
                 ..Default::default()
             });
         }
@@ -222,6 +231,9 @@ impl ListDelegate for KeyTreeDelegate {
         let view = self.view.clone();
         let selected_ix = ix;
 
+        // Check if this item is part of a multi-selection (using pre-computed flag)
+        let is_multi_selected = entry.selected;
+
         let icon = if !is_folder {
             // Key item: Show type badge (String, List, etc.)
             self.render_key_type_badge(&entry.key_type).into_any_element()
@@ -251,53 +263,78 @@ impl ListDelegate for KeyTreeDelegate {
             Label::new("")
         };
 
-        let bg = if ix.row.is_multiple_of(2) { even_bg } else { odd_bg };
+        // Use more visible style for multi-selected items
+        let bg = if is_multi_selected {
+            cx.theme().accent.opacity(0.3)
+        } else if ix.row.is_multiple_of(2) {
+            even_bg
+        } else {
+            odd_bg
+        };
+
+        let row_index = ix.row;
+        let accent_color = cx.theme().accent;
+
+        // Build the inner content
+        let inner_content = h_flex()
+            .w_full()
+            .gap_2()
+            // Handle Shift+click for range selection
+            .on_mouse_down(MouseButton::Left, {
+                let key_id = key_id.clone();
+                let view = view.clone();
+                move |event, _, cx| {
+                    let shift_pressed = event.modifiers.shift;
+                    let _ = view.update(cx, |v, cx| {
+                        v.handle_item_click(row_index, &key_id, is_folder, shift_pressed, cx);
+                    });
+                }
+            })
+            // Bubble phase: set right_clicked_key for non-folder keys
+            // (capture phase already cleared it, so folder clicks stay cleared)
+            .when(!is_folder, |this| {
+                this.on_mouse_down(MouseButton::Right, {
+                    let key_id = key_id.clone();
+                    let view = view.clone();
+                    move |_, window, cx| {
+                        let _ = view.update(cx, |v, cx| {
+                            v.right_clicked_key = Some(key_id.clone());
+
+                            // Select the key if it's not already selected
+                            let current_key = v.server_state.read(cx).key();
+                            if current_key.as_ref() != Some(&key_id) {
+                                v.server_state.update(cx, |state, cx| {
+                                    state.select_key(key_id.clone(), cx);
+                                });
+                            }
+
+                            // Sync List's selected index for visual highlight
+                            let list_state = v.key_tree_list_state.clone();
+                            list_state.update(cx, |state, cx| {
+                                state.set_selected_index(Some(selected_ix), window, cx);
+                                cx.notify();
+                            });
+
+                            cx.notify();
+                        });
+                    }
+                })
+            })
+            .child(icon)
+            .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
+            .child(count_label);
 
         Some(
             ListItem::new(ix)
                 .w_full()
                 .bg(bg)
+                .when(is_multi_selected, |this| {
+                    this.border_1().border_color(accent_color).rounded_sm()
+                })
                 .py_1()
                 .px_2()
                 .pl(px(TREE_INDENT_BASE) * entry.depth + px(TREE_INDENT_OFFSET))
-                .child(
-                    h_flex()
-                        .w_full()
-                        .gap_2()
-                        // Bubble phase: set right_clicked_key for non-folder keys
-                        // (capture phase already cleared it, so folder clicks stay cleared)
-                        .when(!is_folder, |this| {
-                            this.on_mouse_down(MouseButton::Right, {
-                                let key_id = key_id.clone();
-                                let view = view.clone();
-                                move |_, window, cx| {
-                                    let _ = view.update(cx, |v, cx| {
-                                        v.right_clicked_key = Some(key_id.clone());
-
-                                        // Select the key if it's not already selected
-                                        let current_key = v.server_state.read(cx).key();
-                                        if current_key.as_ref() != Some(&key_id) {
-                                            v.server_state.update(cx, |state, cx| {
-                                                state.select_key(key_id.clone(), cx);
-                                            });
-                                        }
-
-                                        // Sync List's selected index for visual highlight
-                                        let list_state = v.key_tree_list_state.clone();
-                                        list_state.update(cx, |state, cx| {
-                                            state.set_selected_index(Some(selected_ix), window, cx);
-                                            cx.notify();
-                                        });
-
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                        })
-                        .child(icon)
-                        .child(div().flex_1().text_ellipsis().child(entry.label.clone()))
-                        .child(count_label),
-                ),
+                .child(inner_content),
         )
     }
 
@@ -366,6 +403,18 @@ impl ZedisKeyTree {
                         this.should_enter_add_key_mode = Some(true);
                         cx.notify();
                     }
+                }
+                ServerEvent::KeySelectionChanged => {
+                    // Update items' selected state and force re-render
+                    let selected_keys = this.server_state.read(cx).selected_keys().clone();
+                    let has_multi_selection = selected_keys.len() > 1;
+                    this.key_tree_list_state.update(cx, |state, cx| {
+                        for item in state.delegate_mut().items.iter_mut() {
+                            item.selected = has_multi_selection && !item.is_folder && selected_keys.contains(&item.id);
+                        }
+                        cx.notify();
+                    });
+                    cx.notify();
                 }
                 _ => {}
             }),
@@ -451,12 +500,6 @@ impl ZedisKeyTree {
         let server_state = self.server_state.read(cx);
         let key_tree_id = server_state.key_tree_id();
 
-        tracing::debug!(
-            key_tree_server_id = server_state.server_id(),
-            key_tree_id,
-            "Server state updated"
-        );
-
         self.state.query_mode = server_state.query_mode();
 
         // Skip rebuild if tree ID hasn't changed (same keys)
@@ -470,6 +513,7 @@ impl ZedisKeyTree {
         let keys_snapshot: Vec<(SharedString, KeyType)> =
             server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
         let expanded_items = self.state.expanded_items.clone();
+        let selected_keys = server_state.selected_keys().clone();
 
         let view_handle = cx.entity().downgrade();
         let keyword = self.state.keyword.clone();
@@ -486,6 +530,7 @@ impl ZedisKeyTree {
                         keyword,
                         expand_all,
                         expanded_items,
+                        selected_keys,
                         &separator,
                         max_key_tree_depth,
                     );
@@ -658,6 +703,72 @@ impl ZedisKeyTree {
         }
     }
 
+    /// Handle item click with optional Shift key for range selection
+    fn handle_item_click(
+        &mut self,
+        row_index: usize,
+        key_id: &SharedString,
+        is_folder: bool,
+        shift_pressed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if is_folder {
+            // For folders, just update anchor and handle normally
+            self.state.anchor_index = Some(row_index);
+            // Clear multi-selection when clicking folders
+            self.server_state.update(cx, |state, cx| {
+                state.clear_selected_keys(cx);
+            });
+            return;
+        }
+
+        if shift_pressed && self.state.anchor_index.is_some() {
+            // Shift+click: perform range selection
+            self.handle_range_selection(row_index, cx);
+        } else {
+            // Normal click: update anchor and set single selection
+            self.state.anchor_index = Some(row_index);
+            self.server_state.update(cx, |state, cx| {
+                state.set_single_selected_key(key_id.clone(), cx);
+            });
+        }
+        cx.notify();
+    }
+
+    /// Handle range selection when Shift+click is detected
+    fn handle_range_selection(&mut self, end_row: usize, cx: &mut Context<Self>) {
+        let Some(anchor_row) = self.state.anchor_index else {
+            return;
+        };
+
+        let start = anchor_row.min(end_row);
+        let end = anchor_row.max(end_row);
+
+        // Collect all non-folder keys in the range
+        let keys_in_range: Vec<SharedString> = self
+            .key_tree_list_state
+            .read(cx)
+            .delegate()
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx >= start && *idx <= end)
+            .filter(|(_, item)| !item.is_folder)
+            .map(|(_, item)| item.id.clone())
+            .collect();
+
+        if keys_in_range.is_empty() {
+            return;
+        }
+
+        // Update server state with selected keys
+        self.server_state.update(cx, |state, cx| {
+            state.select_key_range(keys_in_range, cx);
+        });
+
+        cx.notify();
+    }
+
     /// Render the tree view or empty state message
     ///
     /// Displays:
@@ -691,10 +802,33 @@ impl ZedisKeyTree {
             })
             .context_menu({
                 move |menu, _window, cx| {
-                    // Read the latest right_clicked_key from view (Solution B)
+                    // Read the latest right_clicked_key from view
                     let right_clicked_key = view.upgrade().and_then(|v| v.read(cx).right_clicked_key.clone());
 
-                    if let Some(key) = right_clicked_key {
+                    // Check if multiple keys are selected
+                    let selected_count = view
+                        .upgrade()
+                        .map(|v| v.read(cx).server_state.read(cx).selected_keys_count())
+                        .unwrap_or(0);
+
+                    if selected_count > 1 {
+                        // Multi-selection: show batch delete option
+                        let ss = server_state.clone();
+                        menu.item(
+                            PopupMenuItem::new(format!(
+                                "{} ({})",
+                                i18n_key_tree(cx, "delete_selected"),
+                                selected_count
+                            ))
+                            .on_click(move |_, _window, cx| {
+                                ss.update(cx, |state, cx| {
+                                    let keys: Vec<SharedString> = state.selected_keys().iter().cloned().collect();
+                                    state.delete_keys(keys, cx);
+                                });
+                            }),
+                        )
+                    } else if let Some(key) = right_clicked_key {
+                        // Single selection: show existing menu items
                         let key_dup = key.clone();
                         let key_del = key.clone();
                         let ss_dup = server_state.clone();
@@ -735,9 +869,7 @@ impl ZedisKeyTree {
         let server_id = server_state.server_id();
         let server_state_keyword = server_state.keyword().clone();
         // Sync input field when server changes OR when keyword changes (e.g., after async restore)
-        if server_id != self.state.server_id.as_str()
-            || server_state_keyword != self.state.keyword
-        {
+        if server_id != self.state.server_id.as_str() || server_state_keyword != self.state.keyword {
             self.state.server_id = server_id.to_string().into();
             // Sync input field with server's cached keyword
             self.state.keyword = server_state_keyword.clone();
