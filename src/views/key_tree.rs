@@ -36,7 +36,7 @@ use gpui_component::{
     v_flex,
 };
 use std::rc::Rc;
-use tracing::info;
+use tracing::{debug, info};
 
 // Constants for tree layout and behavior
 const TREE_INDENT_BASE: f32 = 16.0; // Base indentation per level in pixels
@@ -78,8 +78,6 @@ struct KeyTreeItem {
     expanded: bool,
     children_count: usize,
     is_folder: bool,
-    /// Whether this item is part of a multi-selection
-    selected: bool,
 }
 
 fn new_key_tree_items(
@@ -87,11 +85,9 @@ fn new_key_tree_items(
     keyword: SharedString,
     expand_all: bool,
     expanded_items: AHashSet<SharedString>,
-    selected_keys: AHashSet<SharedString>,
     separator: &str,
     max_key_tree_depth: usize,
 ) -> Vec<KeyTreeItem> {
-    let has_multi_selection = selected_keys.len() > 1;
     keys.sort_unstable_by_key(|(k, _)| k.clone());
     let expanded_items_set = expanded_items.iter().map(|s| s.as_str()).collect::<AHashSet<&str>>();
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
@@ -108,7 +104,6 @@ fn new_key_tree_items(
                     id: key.clone(),
                     label: key.clone(),
                     key_type,
-                    selected: has_multi_selection && selected_keys.contains(&key),
                     ..Default::default()
                 },
             );
@@ -144,7 +139,6 @@ fn new_key_tree_items(
                 key_type,
                 depth: index,
                 expanded,
-                selected: has_multi_selection && selected_keys.contains(&item_id),
                 ..Default::default()
             });
         }
@@ -231,8 +225,17 @@ impl ListDelegate for KeyTreeDelegate {
         let view = self.view.clone();
         let selected_ix = ix;
 
-        // Check if this item is part of a multi-selection (using pre-computed flag)
-        let is_multi_selected = entry.selected;
+        // Check if this item is part of a multi-selection (read live state)
+        let is_multi_selected = self
+            .view
+            .upgrade()
+            .is_some_and(|view| {
+                let state = view.read(cx).server_state.read(cx);
+                state.selected_keys_count() > 1 && state.is_key_selected(&key_id)
+            });
+        if is_multi_selected {
+            debug!(key = %key_id, "key_tree render multi-selected item");
+        }
 
         let icon = if !is_folder {
             // Key item: Show type badge (String, List, etc.)
@@ -265,7 +268,7 @@ impl ListDelegate for KeyTreeDelegate {
 
         // Use more visible style for multi-selected items
         let bg = if is_multi_selected {
-            cx.theme().accent.opacity(0.3)
+            cx.theme().list_active
         } else if ix.row.is_multiple_of(2) {
             even_bg
         } else {
@@ -273,8 +276,6 @@ impl ListDelegate for KeyTreeDelegate {
         };
 
         let row_index = ix.row;
-        let accent_color = cx.theme().accent;
-
         // Build the inner content
         let inner_content = h_flex()
             .w_full()
@@ -329,7 +330,7 @@ impl ListDelegate for KeyTreeDelegate {
                 .w_full()
                 .bg(bg)
                 .when(is_multi_selected, |this| {
-                    this.border_1().border_color(accent_color).rounded_sm()
+                    this.border_1().border_color(cx.theme().list_active_border).rounded_sm()
                 })
                 .py_1()
                 .px_2()
@@ -405,13 +406,9 @@ impl ZedisKeyTree {
                     }
                 }
                 ServerEvent::KeySelectionChanged => {
-                    // Update items' selected state and force re-render
-                    let selected_keys = this.server_state.read(cx).selected_keys().clone();
-                    let has_multi_selection = selected_keys.len() > 1;
-                    this.key_tree_list_state.update(cx, |state, cx| {
-                        for item in state.delegate_mut().items.iter_mut() {
-                            item.selected = has_multi_selection && !item.is_folder && selected_keys.contains(&item.id);
-                        }
+                    let selected_count = this.server_state.read(cx).selected_keys_count();
+                    debug!(selected_count, "key_tree selection changed");
+                    this.key_tree_list_state.update(cx, |_state, cx| {
                         cx.notify();
                     });
                     cx.notify();
@@ -513,7 +510,6 @@ impl ZedisKeyTree {
         let keys_snapshot: Vec<(SharedString, KeyType)> =
             server_state.keys().iter().map(|(k, v)| (k.clone(), *v)).collect();
         let expanded_items = self.state.expanded_items.clone();
-        let selected_keys = server_state.selected_keys().clone();
 
         let view_handle = cx.entity().downgrade();
         let keyword = self.state.keyword.clone();
@@ -530,7 +526,6 @@ impl ZedisKeyTree {
                         keyword,
                         expand_all,
                         expanded_items,
-                        selected_keys,
                         &separator,
                         max_key_tree_depth,
                     );
@@ -760,6 +755,13 @@ impl ZedisKeyTree {
         if keys_in_range.is_empty() {
             return;
         }
+
+        debug!(
+            start_row = start,
+            end_row = end,
+            selected_count = keys_in_range.len(),
+            "key_tree range selection"
+        );
 
         // Update server state with selected keys
         self.server_state.update(cx, |state, cx| {

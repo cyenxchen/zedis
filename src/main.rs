@@ -13,6 +13,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
 use std::{env, str::FromStr};
+use std::fs::OpenOptions;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -243,12 +244,43 @@ fn init_logger() {
     {
         level = value;
     }
+    let log_file = env::var("ZEDIS_DEBUG_LOG").ok();
     let timer = tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap_or_else(|_| {
         tracing_subscriber::fmt::time::OffsetTime::new(
             time::UtcOffset::from_hms(0, 0, 0).unwrap_or(time::UtcOffset::UTC),
             time::format_description::well_known::Rfc3339,
         )
     });
+
+    if let Some(path) = log_file.clone() {
+        match OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(file) => {
+                let path_for_writer = path.clone();
+                let writer = move || {
+                    file.try_clone().unwrap_or_else(|_| {
+                        OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&path_for_writer)
+                            .expect("open log file")
+                    })
+                };
+                eprintln!("logging to file: {path}");
+                let subscriber = FmtSubscriber::builder()
+                    .with_max_level(level)
+                    .with_timer(timer)
+                    .with_writer(writer)
+                    .with_ansi(false)
+                    .finish();
+                tracing::subscriber::set_global_default(subscriber)
+                    .expect("setting default subscriber failed");
+                return;
+            }
+            Err(e) => {
+                eprintln!("failed to open log file {path}: {e}");
+            }
+        }
+    }
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
