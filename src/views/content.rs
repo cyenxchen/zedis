@@ -268,6 +268,34 @@ impl ZedisContent {
             .justify_center()
             .child(div().w(px(LOADING_SKELETON_WIDTH)).child(SkeletonLoading::new()))
     }
+    /// Handle the filter action (Cmd+F / Ctrl+F) based on focus location.
+    ///
+    /// - If focus is in the right value editor area, focus the bottom "Filter by keyword" input
+    /// - Otherwise, focus the left key tree search box
+    fn handle_filter_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Check if focus is in the value editor area
+        let editor_has_focus = self
+            .value_editor
+            .as_ref()
+            .is_some_and(|ed| ed.read(cx).contains_focus(window, cx));
+
+        if editor_has_focus {
+            // Focus in right value area -> focus bottom filter box
+            if let Some(editor) = &self.value_editor {
+                editor.update(cx, |ed, cx| {
+                    ed.focus_keyword(window, cx);
+                });
+            }
+        } else {
+            // Default -> focus left key tree search box
+            if let Some(key_tree) = &self.key_tree {
+                key_tree.update(cx, |kt, cx| {
+                    kt.focus_keyword(window, cx);
+                });
+            }
+        }
+    }
+
     /// Render the main editor interface with resizable panels
     ///
     /// Layout:
@@ -435,6 +463,9 @@ impl Render for ZedisContent {
                         _ => {
                             cx.propagate();
                         }
+                    }))
+                    .on_action(cx.listener(|this, _: &ServersAction, window, cx| {
+                        this.handle_filter_action(window, cx);
                     }))
                     .into_any_element()
             }

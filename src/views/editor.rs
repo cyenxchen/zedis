@@ -19,7 +19,7 @@ use crate::{
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
     views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
 };
-use gpui::{ClipboardItem, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use gpui::{App, ClipboardItem, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::Button,
@@ -62,6 +62,9 @@ pub struct ZedisEditor {
 
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
+
+    /// Focus handle for tracking focus within this component
+    focus_handle: FocusHandle,
 
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
@@ -145,6 +148,7 @@ impl ZedisEditor {
 
         // Initialize selectable text state for key name
         let key_text_state = cx.new(|cx| SelectableTextState::new("", cx));
+        let focus_handle = cx.focus_handle();
 
         Self {
             server_state,
@@ -157,6 +161,7 @@ impl ZedisEditor {
             ttl_edit_mode: false,
             ttl_input_state,
             should_enter_ttl_edit_mode: None,
+            focus_handle,
             _subscriptions: subscriptions,
             selected_key_at: None,
         }
@@ -168,6 +173,26 @@ impl ZedisEditor {
         self.selected_key_at
             .map(|t| t.elapsed() < Duration::from_millis(RECENTLY_SELECTED_THRESHOLD_MS))
             .unwrap_or(false)
+    }
+
+    /// Focuses the keyword filter input field in the current type-specific editor.
+    /// Only works for List, Set, Zset, and Hash editors (BytesEditor has no filter).
+    pub fn focus_keyword(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.list_editor {
+            editor.update(cx, |e, cx| e.focus_keyword(window, cx));
+        } else if let Some(editor) = &self.set_editor {
+            editor.update(cx, |e, cx| e.focus_keyword(window, cx));
+        } else if let Some(editor) = &self.zset_editor {
+            editor.update(cx, |e, cx| e.focus_keyword(window, cx));
+        } else if let Some(editor) = &self.hash_editor {
+            editor.update(cx, |e, cx| e.focus_keyword(window, cx));
+        }
+        // bytes_editor has no keyword filter functionality
+    }
+
+    /// Checks if this editor component contains focus.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
     }
 
     /// Handle list edit dialog ready event
@@ -571,6 +596,7 @@ impl Render for ZedisEditor {
         v_flex()
             .w_full()
             .h_full()
+            .track_focus(&self.focus_handle)
             .child(self.render_select_key(cx))
             .child(self.render_editor(window, cx))
             .on_action(cx.listener(move |this, event: &EditorAction, window, cx| match event {

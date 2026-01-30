@@ -244,6 +244,13 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             state.delegate().fetcher().filter(keyword, cx);
         });
     }
+
+    /// Focuses the keyword search input field.
+    pub fn focus_keyword(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyword_state.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
+    }
 }
 impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

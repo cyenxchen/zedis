@@ -21,8 +21,8 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Hsla, MouseButton, ScrollStrategy, SharedString, Subscription, WeakEntity, Window,
-    div, prelude::*, px,
+    App, AppContext, Corner, Entity, FocusHandle, Hsla, MouseButton, ScrollStrategy, SharedString, Subscription,
+    WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
@@ -226,13 +226,10 @@ impl ListDelegate for KeyTreeDelegate {
         let selected_ix = ix;
 
         // Check if this item is part of a multi-selection (read live state)
-        let is_multi_selected = self
-            .view
-            .upgrade()
-            .is_some_and(|view| {
-                let state = view.read(cx).server_state.read(cx);
-                state.selected_keys_count() > 1 && state.is_key_selected(&key_id)
-            });
+        let is_multi_selected = self.view.upgrade().is_some_and(|view| {
+            let state = view.read(cx).server_state.read(cx);
+            state.selected_keys_count() > 1 && state.is_key_selected(&key_id)
+        });
         if is_multi_selected {
             debug!(key = %key_id, "key_tree render multi-selected item");
         }
@@ -374,6 +371,9 @@ pub struct ZedisKeyTree {
     /// The key that was right-clicked (for context menu)
     right_clicked_key: Option<SharedString>,
 
+    /// Focus handle for tracking focus within this component
+    focus_handle: FocusHandle,
+
     /// Event subscriptions for reactive updates
     _subscriptions: Vec<Subscription>,
 }
@@ -458,6 +458,8 @@ impl ZedisKeyTree {
             _ => {}
         }));
 
+        let focus_handle = cx.focus_handle();
+
         let mut this = Self {
             state: KeyTreeState {
                 query_mode,
@@ -470,6 +472,7 @@ impl ZedisKeyTree {
             server_state,
             should_enter_add_key_mode: None,
             right_clicked_key: None,
+            focus_handle,
             _subscriptions: subscriptions,
         };
 
@@ -482,6 +485,13 @@ impl ZedisKeyTree {
     fn reset(&mut self, _cx: &mut Context<Self>) {
         self.state = KeyTreeState::default();
         self.right_clicked_key = None;
+    }
+
+    /// Focuses the keyword search input field.
+    pub fn focus_keyword(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyword_state.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
     }
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
@@ -963,6 +973,7 @@ impl Render for ZedisKeyTree {
         v_flex()
             .h_full()
             .w_full()
+            .track_focus(&self.focus_handle)
             .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {

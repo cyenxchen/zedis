@@ -12,8 +12,8 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
-use std::{env, str::FromStr};
 use std::fs::OpenOptions;
+use std::{env, str::FromStr};
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -272,8 +272,7 @@ fn init_logger() {
                     .with_writer(writer)
                     .with_ansi(false)
                     .finish();
-                tracing::subscriber::set_global_default(subscriber)
-                    .expect("setting default subscriber failed");
+                tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
                 return;
             }
             Err(e) => {

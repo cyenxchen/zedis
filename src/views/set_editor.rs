@@ -173,6 +173,13 @@ impl ZedisSetEditor {
         info!("Creating new SET editor view");
         Self { table_state }
     }
+
+    /// Focuses the keyword filter input field.
+    pub fn focus_keyword(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.table_state.update(cx, |state, cx| {
+            state.focus_keyword(window, cx);
+        });
+    }
 }
 
 impl Render for ZedisSetEditor {
