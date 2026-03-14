@@ -93,6 +93,12 @@ pub enum ServerTask {
 
     /// Duplicate a key with automatic naming
     DuplicateKey,
+
+    /// Export selected keys to a file
+    ExportKeys,
+
+    /// Import keys from a file
+    ImportKeys,
 }
 
 impl ServerTask {
@@ -124,6 +130,8 @@ impl ServerTask {
             ServerTask::RemoveZsetValue => "remove_zset_value",
             ServerTask::RemoveHashValue => "remove_hash_value",
             ServerTask::DuplicateKey => "duplicate_key",
+            ServerTask::ExportKeys => "export_keys",
+            ServerTask::ImportKeys => "import_keys",
         }
     }
 }
@@ -200,6 +208,12 @@ pub enum ServerEvent {
 
     /// Multiple keys have been deleted (count)
     KeysDeleted(usize),
+
+    /// Keys have been exported (count)
+    KeysExported(usize),
+
+    /// Keys have been imported (success_count, fail_count)
+    KeysImported(usize, usize),
 }
 
 impl EventEmitter<ServerEvent> for ZedisServerState {}

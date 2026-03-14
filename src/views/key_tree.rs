@@ -341,6 +341,26 @@ impl ListDelegate for KeyTreeDelegate {
     }
 }
 
+/// Spawns a save-file dialog and exports the given keys to CSV.
+///
+/// Called from context menu closures where `cx` is `&mut App`.
+fn spawn_export_dialog(keys: Vec<SharedString>, ss: Entity<ZedisServerState>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let handle = rfd::AsyncFileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name("redis_keys_export.csv")
+            .save_file()
+            .await;
+        if let Some(file) = handle {
+            let path = file.path().to_string_lossy().to_string();
+            let _ = ss.update(cx, |state, cx| {
+                state.export_keys(keys, path, cx);
+            });
+        }
+    })
+    .detach();
+}
+
 /// Key tree view component for browsing and filtering Redis keys
 ///
 /// Displays Redis keys in a hierarchical tree structure with:
@@ -618,6 +638,26 @@ impl ZedisKeyTree {
         });
     }
 
+    fn handle_import_keys(&self, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+
+        cx.spawn(async move |_this, cx| {
+            let handle = rfd::AsyncFileDialog::new()
+                .add_filter("CSV", &["csv"])
+                .set_title("Import Redis keys")
+                .pick_file()
+                .await;
+
+            if let Some(file) = handle {
+                let path = file.path().to_string_lossy().to_string();
+                let _ = server_state.update(cx, |state, cx| {
+                    state.import_keys(path, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
     fn get_tree_status_view(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let server_state = self.server_state.read(cx);
         // if scanning, return None
@@ -824,29 +864,51 @@ impl ZedisKeyTree {
                         .unwrap_or(0);
 
                     if selected_count > 1 {
-                        // Multi-selection: show batch delete option
-                        let ss = server_state.clone();
+                        // Multi-selection: show export and batch delete options
+                        let ss_export = server_state.clone();
+                        let ss_delete = server_state.clone();
                         menu.item(
+                            PopupMenuItem::new(format!(
+                                "{} ({})",
+                                i18n_key_tree(cx, "export_selected"),
+                                selected_count
+                            ))
+                            .on_click(move |_, _window, cx| {
+                                let keys: Vec<SharedString> =
+                                    ss_export.read(cx).selected_keys().iter().cloned().collect();
+                                spawn_export_dialog(keys, ss_export.clone(), cx);
+                            }),
+                        )
+                        .item(
                             PopupMenuItem::new(format!(
                                 "{} ({})",
                                 i18n_key_tree(cx, "delete_selected"),
                                 selected_count
                             ))
                             .on_click(move |_, _window, cx| {
-                                ss.update(cx, |state, cx| {
+                                ss_delete.update(cx, |state, cx| {
                                     let keys: Vec<SharedString> = state.selected_keys().iter().cloned().collect();
                                     state.delete_keys(keys, cx);
                                 });
                             }),
                         )
                     } else if let Some(key) = right_clicked_key {
-                        // Single selection: show existing menu items
+                        // Single selection: show export, duplicate, and delete
                         let key_dup = key.clone();
                         let key_del = key.clone();
+                        let ss_export = server_state.clone();
                         let ss_dup = server_state.clone();
                         let ss_del = server_state.clone();
 
-                        menu.item(PopupMenuItem::new(i18n_key_tree(cx, "duplicate_key")).on_click(
+                        menu.item(
+                            PopupMenuItem::new(i18n_key_tree(cx, "export_key")).on_click({
+                                let key = key.clone();
+                                move |_, _window, cx| {
+                                    spawn_export_dialog(vec![key.clone()], ss_export.clone(), cx);
+                                }
+                            }),
+                        )
+                        .item(PopupMenuItem::new(i18n_key_tree(cx, "duplicate_key")).on_click(
                             move |_, _window, cx| {
                                 ss_dup.update(cx, |state, cx| {
                                     state.duplicate_key(key_dup.clone(), cx);
@@ -954,6 +1016,15 @@ impl ZedisKeyTree {
                     .icon(CustomIconName::FilePlusCorner)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.handle_add_key(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("key-tree-import-btn")
+                    .outline()
+                    .tooltip(i18n_key_tree(cx, "import_keys_tooltip"))
+                    .icon(CustomIconName::FileInput)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.handle_import_keys(cx);
                     })),
             )
     }

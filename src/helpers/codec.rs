@@ -592,6 +592,17 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
 }
 
+/// Convert bytes to compact hex string (no spaces)
+/// Format: "00010203..." — used for CSV export
+pub fn bytes_to_compact_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(result, "{:02x}", b);
+    }
+    result
+}
+
 /// Convert hex string back to bytes
 /// Accepts: "00 01 02 03" or "00010203" formats
 pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {

@@ -127,6 +127,9 @@ add_key_title = "添加键"
 duplicate_key = "复制"
 delete_key = "删除"
 delete_selected = "删除选中"
+export_key = "导出"
+export_selected = "导出选中"
+import_keys_tooltip = "从文件导入键"
 
 [status_bar]
 toggle_terminal_tooltip = "切换redis控制台"

@@ -128,6 +128,9 @@ add_key_title = "Add Key"
 duplicate_key = "Duplicate"
 delete_key = "Delete"
 delete_selected = "Delete Selected"
+export_key = "Export"
+export_selected = "Export Selected"
+import_keys_tooltip = "Import keys from file"
 
 [status_bar]
 toggle_terminal_tooltip = "Toggle redis terminal"

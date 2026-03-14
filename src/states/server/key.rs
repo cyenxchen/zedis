@@ -21,7 +21,8 @@ use super::{
     value::{KeyType, RedisValue, RedisValueStatus, SortOrder},
     zset::first_load_zset_value,
 };
-use crate::states::ZedisGlobalStore;
+use crate::helpers::codec::{bytes_to_compact_hex, hex_to_bytes};
+use crate::states::{NotificationAction, ZedisGlobalStore};
 use crate::{
     connection::{QueryMode, get_connection_manager},
     error::Error,
@@ -649,6 +650,158 @@ impl ZedisServerState {
                     this.keys.insert(key_clone.clone(), key_type);
                     this.key_tree_id = Uuid::now_v7().to_string().into();
                     this.select_key(key_clone, cx);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Exports selected keys to a CSV file using DUMP/PTTL.
+    ///
+    /// CSV format: `<hex_key>,<hex_dump_value>,<ttl_ms>` (compatible with ARDM)
+    pub fn export_keys(&mut self, keys: Vec<SharedString>, file_path: String, cx: &mut Context<Self>) {
+        if keys.is_empty() {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_count = keys.len();
+
+        self.spawn(
+            ServerTask::ExportKeys,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+
+                // Batch all DUMP + PTTL commands into a single pipeline
+                let mut pipeline = pipe();
+                for key in &keys {
+                    pipeline.cmd("DUMP").arg(key.as_str());
+                    pipeline.cmd("PTTL").arg(key.as_str());
+                }
+                let results: Vec<redis::Value> = pipeline.query_async(&mut conn).await?;
+
+                let mut lines = Vec::with_capacity(keys.len());
+                let mut result_iter = results.into_iter();
+                for key in &keys {
+                    let dump_val = result_iter.next().ok_or(Error::Invalid {
+                        message: "Missing DUMP result".to_string(),
+                    })?;
+                    let pttl_val = result_iter.next().ok_or(Error::Invalid {
+                        message: "Missing PTTL result".to_string(),
+                    })?;
+                    let (dump, pttl): (Vec<u8>, i64) = redis::from_redis_value(
+                        redis::Value::Array(vec![dump_val, pttl_val]),
+                    )
+                    .map_err(|e| Error::Invalid {
+                        message: format!("Failed to parse DUMP/PTTL result: {}", e),
+                    })?;
+                    let hex_key = bytes_to_compact_hex(key.as_bytes());
+                    let hex_dump = bytes_to_compact_hex(&dump);
+                    lines.push(format!("{},{},{}", hex_key, hex_dump, pttl));
+                }
+
+                let content = lines.join("\n");
+                std::fs::write(&file_path, content).map_err(|e| Error::Invalid {
+                    message: format!("Failed to write file: {}", e),
+                })?;
+
+                Ok(key_count)
+            },
+            move |_this, result, cx| {
+                if let Ok(count) = result {
+                    cx.emit(ServerEvent::KeysExported(count));
+                    cx.emit(ServerEvent::Notification(NotificationAction::new_success(
+                        format!("Exported {} keys", count).into(),
+                    )));
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Imports keys from a CSV file using RESTORE.
+    ///
+    /// CSV format: `<hex_key>,<hex_dump_value>,<ttl_ms>` (compatible with ARDM)
+    pub fn import_keys(&mut self, file_path: String, cx: &mut Context<Self>) {
+        let server_id = self.server_id.clone();
+        let db = self.db;
+
+        self.spawn(
+            ServerTask::ImportKeys,
+            move || async move {
+                let content = std::fs::read_to_string(&file_path).map_err(|e| Error::Invalid {
+                    message: format!("Failed to read file: {}", e),
+                })?;
+
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+
+                // Parse lines and build pipeline in a single pass
+                let mut pipeline = pipe();
+                let mut parse_fail_count = 0usize;
+                let mut cmd_count = 0usize;
+
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let parts: Vec<&str> = line.splitn(3, ',').collect();
+                    if parts.len() != 3 {
+                        parse_fail_count += 1;
+                        continue;
+                    }
+                    let (key_bytes, dump_bytes, pttl) = match (
+                        hex_to_bytes(parts[0]),
+                        hex_to_bytes(parts[1]),
+                        parts[2].parse::<i64>(),
+                    ) {
+                        (Ok(k), Ok(d), Ok(t)) => (k, d, t),
+                        _ => {
+                            parse_fail_count += 1;
+                            continue;
+                        }
+                    };
+                    let restore_ttl = if pttl < 0 { 0 } else { pttl };
+                    let key = String::from_utf8_lossy(&key_bytes);
+                    pipeline
+                        .cmd("RESTORE")
+                        .arg(key.as_ref())
+                        .arg(restore_ttl)
+                        .arg(&dump_bytes)
+                        .arg("REPLACE");
+                    cmd_count += 1;
+                }
+
+                let mut success_count = 0usize;
+                let mut fail_count = parse_fail_count;
+
+                if cmd_count > 0 {
+                    let results: Vec<redis::Value> = pipeline.query_async(&mut conn).await?;
+                    for result in &results {
+                        if matches!(result, redis::Value::Okay) {
+                            success_count += 1;
+                        } else {
+                            fail_count += 1;
+                        }
+                    }
+                }
+
+                Ok((success_count, fail_count))
+            },
+            move |this, result, cx| {
+                if let Ok((success_count, fail_count)) = result {
+                    cx.emit(ServerEvent::KeysImported(success_count, fail_count));
+                    let msg = if fail_count > 0 {
+                        format!("Imported {} keys, {} failed", success_count, fail_count)
+                    } else {
+                        format!("Imported {} keys", success_count)
+                    };
+                    cx.emit(ServerEvent::Notification(NotificationAction::new_success(msg.into())));
+                    // Refresh key list
+                    let keyword = this.keyword.clone();
+                    this.scan(keyword, cx);
                 }
                 cx.notify();
             },
