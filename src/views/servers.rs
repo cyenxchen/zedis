@@ -16,8 +16,10 @@ use crate::assets::CustomIconName;
 use crate::components::Card;
 use crate::connection::RedisServer;
 use crate::helpers::{is_windows, validate_common_string, validate_host, validate_long_string};
-use crate::states::{Route, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers};
-use gpui::{App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
+use crate::states::{
+    Route, ServersLayout, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_servers, update_app_state_and_save,
+};
+use gpui::{AnyElement, App, Entity, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
@@ -25,6 +27,7 @@ use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    list::ListItem,
     menu::{ContextMenuExt, PopupMenuItem},
     scroll::ScrollableElement,
 };
@@ -725,6 +728,199 @@ impl ZedisServers {
             .is_some_and(|d| d.to_lowercase().contains(&keyword));
         name_matches || host_matches || desc_matches
     }
+
+    fn server_title(server: &RedisServer) -> String {
+        format!("{} ({}:{})", server.name, server.host, server.port)
+    }
+
+    fn server_updated_at(server: &RedisServer) -> String {
+        server
+            .updated_at
+            .as_ref()
+            .map(|updated_at| updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string())
+            .unwrap_or_default()
+    }
+
+    fn render_server_actions(
+        &self,
+        index: usize,
+        update_server: RedisServer,
+        remove_server_id: String,
+        update_tooltip: SharedString,
+        remove_tooltip: SharedString,
+        cx: &mut Context<Self>,
+    ) -> Vec<Button> {
+        vec![
+            Button::new(("servers-card-action-select", index))
+                .ghost()
+                .tooltip(update_tooltip)
+                .icon(CustomIconName::FilePenLine)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.fill_inputs(window, cx, &update_server);
+                    this.add_or_update_server(window, cx);
+                })),
+            Button::new(("servers-card-action-delete", index))
+                .ghost()
+                .tooltip(remove_tooltip)
+                .icon(CustomIconName::FileXCorner)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.remove_server(window, cx, &remove_server_id);
+                })),
+        ]
+    }
+
+    fn render_server_entry(
+        &self,
+        index: usize,
+        server: &RedisServer,
+        layout: ServersLayout,
+        view: Entity<Self>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let select_server_id = server.id.clone();
+        let update_server = server.clone();
+        let duplicate_server = server.clone();
+        let remove_server_id = server.id.clone();
+        let duplicate_server_label = i18n_servers(cx, "duplicate_server");
+        let update_tooltip = i18n_servers(cx, "update_tooltip");
+        let remove_tooltip = i18n_servers(cx, "remove_tooltip");
+        let description = server.description.as_deref().unwrap_or_default().to_string();
+        let updated_at = Self::server_updated_at(server);
+        let title = Self::server_title(server);
+        let bg = if cx.theme().is_dark() {
+            cx.theme().background.lighten(THEME_LIGHTEN_AMOUNT_DARK)
+        } else {
+            cx.theme().background.darken(THEME_DARKEN_AMOUNT_LIGHT)
+        };
+
+        let actions = self.render_server_actions(
+            index,
+            update_server,
+            remove_server_id,
+            update_tooltip,
+            remove_tooltip,
+            cx,
+        );
+
+        let handle_select_server = cx.listener(move |this, _, _, cx| {
+            let select_server_id = select_server_id.clone();
+            let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+            info!(
+                "handle_select_server: server_id={}, preset_credentials_count={}",
+                select_server_id,
+                preset_credentials.len()
+            );
+
+            this.server_state.update(cx, |state, cx| {
+                state.select(select_server_id.into(), 0, preset_credentials, cx);
+            });
+
+            cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                store.update(cx, |state, cx| {
+                    state.go_to(Route::Editor, cx);
+                });
+            });
+        });
+
+        let entry = match layout {
+            ServersLayout::Grid => Card::new(("servers-card", index))
+                .icon(Icon::new(CustomIconName::DatabaseZap))
+                .title(title)
+                .bg(bg)
+                .when(!description.is_empty(), |this| this.description(description.clone()))
+                .when(!updated_at.is_empty(), |this| {
+                    this.footer(
+                        Label::new(updated_at.clone())
+                            .text_sm()
+                            .text_right()
+                            .whitespace_normal()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                })
+                .actions(actions)
+                .on_click(handle_select_server)
+                .into_any_element(),
+            ServersLayout::List => ListItem::new(("servers-list-item", index))
+                .w_full()
+                .border(px(1.))
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius)
+                .bg(bg)
+                .py_3()
+                .px_4()
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .v_flex()
+                                .flex_1()
+                                .overflow_hidden()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .h_flex()
+                                        .items_center()
+                                        .overflow_hidden()
+                                        .child(Icon::new(CustomIconName::DatabaseZap))
+                                        .child(div().flex_1().overflow_hidden().child(
+                                            Label::new(title).ml_2().text_base().whitespace_nowrap().text_ellipsis(),
+                                        )),
+                                )
+                                .when(!description.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(description.clone())
+                                            .text_sm()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .h_flex()
+                                .flex_shrink_0()
+                                .items_center()
+                                .gap_2()
+                                .when(!updated_at.is_empty(), |this| {
+                                    this.child(
+                                        Label::new(updated_at.clone())
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground),
+                                    )
+                                })
+                                .children(actions),
+                        ),
+                )
+                .on_click(handle_select_server)
+                .into_any_element(),
+        };
+
+        div()
+            .id(("servers-entry-context-menu", index))
+            .context_menu({
+                let view = view.clone();
+                move |menu, _window, _cx| {
+                    menu.item(PopupMenuItem::new(duplicate_server_label.clone()).on_click({
+                        let view = view.clone();
+                        let duplicate_server = duplicate_server.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.duplicate_server(window, cx, &duplicate_server);
+                            });
+                        }
+                    }))
+                }
+            })
+            .child(entry)
+            .into_any_element()
+    }
 }
 
 impl Render for ZedisServers {
@@ -737,6 +933,7 @@ impl Render for ZedisServers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = window.viewport_size().width;
         let view = cx.entity();
+        let current_layout = cx.global::<ZedisGlobalStore>().read(cx).servers_layout();
 
         // Responsive grid columns based on viewport width
         let cols = match width {
@@ -745,135 +942,26 @@ impl Render for ZedisServers {
             _ => 3,
         };
 
-        // Card background color (slightly lighter/darker than theme background)
-        let bg = if cx.theme().is_dark() {
-            cx.theme().background.lighten(THEME_LIGHTEN_AMOUNT_DARK)
-        } else {
-            cx.theme().background.darken(THEME_DARKEN_AMOUNT_LIGHT)
-        };
-
-        let update_tooltip = i18n_servers(cx, "update_tooltip");
-        let remove_tooltip = i18n_servers(cx, "remove_tooltip");
-        let duplicate_server_label = i18n_servers(cx, "duplicate_server");
-
         // Build card for each configured server (filtered by keyword)
-        let children: Vec<_> = self
-            .server_state
-            .read(cx)
-            .servers()
-            .unwrap_or_default()
+        let servers = self.server_state.read(cx).servers().unwrap_or_default().to_vec();
+
+        let children: Vec<AnyElement> = servers
             .iter()
             .filter(|server| self.server_matches_filter(server))
             .enumerate()
-            .map(|(index, server)| {
-                // Clone values for use in closures
-                let view = view.clone();
-                let select_server_id = server.id.clone();
-                let update_server = server.clone();
-                let duplicate_server = server.clone();
-                let remove_server_id = server.id.clone();
-
-                let description = server.description.as_deref().unwrap_or_default();
-
-                // Extract and format update timestamp (show only date part)
-                let updated_at = if let Some(updated_at) = &server.updated_at {
-                    updated_at.substring(0, UPDATED_AT_SUBSTRING_LENGTH).to_string()
-                } else {
-                    String::new()
-                };
-
-                let title = format!("{} ({}:{})", server.name, server.host, server.port);
-
-                // Action buttons for each server card
-                let actions = vec![
-                    // Edit button - opens dialog to modify server configuration
-                    Button::new(("servers-card-action-select", index))
-                        .ghost()
-                        .tooltip(update_tooltip.clone())
-                        .icon(CustomIconName::FilePenLine)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation(); // Don't trigger card click
-                            this.fill_inputs(window, cx, &update_server);
-                            this.add_or_update_server(window, cx);
-                        })),
-                    // Delete button - shows confirmation before removing
-                    Button::new(("servers-card-action-delete", index))
-                        .ghost()
-                        .tooltip(remove_tooltip.clone())
-                        .icon(CustomIconName::FileXCorner)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation(); // Don't trigger card click
-                            this.remove_server(window, cx, &remove_server_id);
-                        })),
-                ];
-
-                // Card click handler - connect to server and navigate to editor
-                let handle_select_server = cx.listener(move |this, _, _, cx| {
-                    let select_server_id = select_server_id.clone();
-                    let preset_credentials = cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
-                    info!(
-                        "handle_select_server: server_id={}, preset_credentials_count={}",
-                        select_server_id,
-                        preset_credentials.len()
-                    );
-
-                    // Connect to server
-                    this.server_state.update(cx, |state, cx| {
-                        state.select(select_server_id.into(), 0, preset_credentials, cx);
-                    });
-
-                    // Navigate to editor view
-                    cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
-                        store.update(cx, |state, cx| {
-                            state.go_to(Route::Editor, cx);
-                        });
-                    });
-                });
-
-                // Build server card with conditional footer
-                div()
-                    .id(("servers-card-context-menu", index))
-                    .context_menu({
-                        let view = view.clone();
-                        let duplicate_server = duplicate_server.clone();
-                        let duplicate_server_label = duplicate_server_label.clone();
-                        move |menu, _window, _cx| {
-                            menu.item(PopupMenuItem::new(duplicate_server_label.clone()).on_click({
-                                let view = view.clone();
-                                let duplicate_server = duplicate_server.clone();
-                                move |_, window, cx| {
-                                    view.update(cx, |this, cx| {
-                                        this.duplicate_server(window, cx, &duplicate_server);
-                                    });
-                                }
-                            }))
-                        }
-                    })
-                    .child(
-                        Card::new(("servers-card", index))
-                            .icon(Icon::new(CustomIconName::DatabaseZap))
-                            .title(title)
-                            .bg(bg)
-                            .when(!description.is_empty(), |this| {
-                                this.description(description.to_string())
-                            })
-                            .when(!updated_at.is_empty(), |this| {
-                                this.footer(
-                                    Label::new(updated_at)
-                                        .text_sm()
-                                        .text_right()
-                                        .whitespace_normal()
-                                        .text_color(cx.theme().muted_foreground),
-                                )
-                            })
-                            .actions(actions)
-                            .on_click(handle_select_server),
-                    )
-            })
+            .map(|(index, server)| self.render_server_entry(index, server, current_layout, view.clone(), cx))
             .collect();
 
-        // Grid with server cards
-        let grid = div().grid().grid_cols(cols).gap_1().w_full().children(children);
+        let server_content = match current_layout {
+            ServersLayout::Grid => div()
+                .grid()
+                .grid_cols(cols)
+                .gap_1()
+                .w_full()
+                .children(children)
+                .into_any_element(),
+            ServersLayout::List => div().v_flex().gap_1().w_full().children(children).into_any_element(),
+        };
 
         // Search bar at bottom
         let search_btn = Button::new("filter-search-btn")
@@ -896,10 +984,46 @@ impl Render for ZedisServers {
                 this.add_or_update_server(window, cx);
             }));
 
+        let grid_btn = Button::new("servers-layout-grid-btn")
+            .small()
+            .icon(IconName::LayoutDashboard)
+            .tooltip(i18n_servers(cx, "layout_grid_tooltip"))
+            .when(current_layout == ServersLayout::Grid, |this| this.outline())
+            .when(current_layout != ServersLayout::Grid, |this| this.ghost())
+            .on_click(|_, _, cx| {
+                update_app_state_and_save(cx, "save_servers_layout_grid", move |state, _cx| {
+                    state.set_servers_layout(ServersLayout::Grid);
+                });
+            });
+
+        let list_btn = Button::new("servers-layout-list-btn")
+            .small()
+            .icon(CustomIconName::ListChecvronsDownUp)
+            .tooltip(i18n_servers(cx, "layout_list_tooltip"))
+            .when(current_layout == ServersLayout::List, |this| this.outline())
+            .when(current_layout != ServersLayout::List, |this| this.ghost())
+            .on_click(|_, _, cx| {
+                update_app_state_and_save(cx, "save_servers_layout_list", move |state, _cx| {
+                    state.set_servers_layout(ServersLayout::List);
+                });
+            });
+
+        let layout_actions = div()
+            .h_flex()
+            .w_full()
+            .justify_end()
+            .px_2()
+            .pt_2()
+            .pb_1()
+            .gap_1()
+            .child(grid_btn)
+            .child(list_btn);
+
         let search_bar = div()
             .h_flex()
             .w_full()
             .flex_shrink_0()
+            .items_center()
             .gap_2()
             .p_2()
             .border_t_1()
@@ -908,17 +1032,25 @@ impl Render for ZedisServers {
             .child(add_btn)
             .child(
                 Input::new(&self.filter_state)
-                    .w(px(200.0))
+                    .w(px(220.0))
                     .suffix(search_btn)
                     .cleanable(true),
-            );
+            )
+            .child(div().flex_1());
 
         // Main layout: scrollable grid + fixed search bar
         div()
             .v_flex()
             .h_full()
             .w_full()
-            .child(div().id("servers-grid-scroll").flex_1().overflow_y_scroll().child(grid))
+            .child(layout_actions)
+            .child(
+                div()
+                    .id("servers-grid-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(server_content),
+            )
             .child(search_bar)
             .into_any_element()
     }

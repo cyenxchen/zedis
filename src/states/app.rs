@@ -51,6 +51,13 @@ impl FontSize {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ServersLayout {
+    #[default]
+    Grid,
+    List,
+}
+
 /// Theme selection actions for the settings menu
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum ThemeAction {
@@ -155,6 +162,8 @@ pub struct ZedisAppState {
     locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
     key_tree_width: Pixels,
+    #[serde(default)]
+    servers_layout: ServersLayout,
     theme: Option<String>,
     font_size: Option<FontSize>,
     max_key_tree_depth: Option<usize>,
@@ -230,6 +239,9 @@ impl ZedisAppState {
     pub fn key_tree_width(&self) -> Pixels {
         self.key_tree_width
     }
+    pub fn servers_layout(&self) -> ServersLayout {
+        self.servers_layout
+    }
     pub fn content_width(&self) -> Option<Pixels> {
         let bounds = self.bounds?;
         let width = bounds.size.width.as_f32();
@@ -238,6 +250,9 @@ impl ZedisAppState {
     }
     pub fn set_key_tree_width(&mut self, width: Pixels) {
         self.key_tree_width = width;
+    }
+    pub fn set_servers_layout(&mut self, servers_layout: ServersLayout) {
+        self.servers_layout = servers_layout;
     }
     pub fn route(&self) -> Route {
         self.route
