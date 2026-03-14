@@ -25,6 +25,7 @@ use gpui_component::{
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
+    menu::{ContextMenuExt, PopupMenuItem},
     scroll::ScrollableElement,
 };
 use rust_i18n::t;
@@ -306,15 +307,20 @@ impl ZedisServers {
         self.username_state.update(cx, |state, cx| {
             state.set_value(server.username.clone().unwrap_or_default(), window, cx);
         });
-        // Only set port if non-zero (use placeholder for 0)
-        if server.port != 0 {
-            self.port_state.update(cx, |state, cx| {
-                state.set_value(server.port.to_string(), window, cx);
-            });
-        }
+        self.port_state.update(cx, |state, cx| {
+            let port = if server.port == 0 {
+                String::new()
+            } else {
+                server.port.to_string()
+            };
+            state.set_value(port, window, cx);
+        });
 
         self.password_state.update(cx, |state, cx| {
             state.set_value(server.password.clone().unwrap_or_default(), window, cx);
+        });
+        self.master_name_state.update(cx, |state, cx| {
+            state.set_value(server.master_name.clone().unwrap_or_default(), window, cx);
         });
         self.description_state.update(cx, |state, cx| {
             state.set_value(server.description.clone().unwrap_or_default(), window, cx);
@@ -343,6 +349,19 @@ impl ZedisServers {
         self.server_enable_tls.set(server.tls.unwrap_or(false));
         self.server_insecure_tls.set(server.insecure.unwrap_or(false));
         self.server_ssh_tunnel.set(server.ssh_tunnel.unwrap_or(false));
+    }
+
+    /// Open the server dialog in duplicate mode.
+    ///
+    /// This pre-fills the form with the current server data but clears the
+    /// identifier so saving creates a new connection instead of overwriting
+    /// the existing one.
+    fn duplicate_server(&mut self, window: &mut Window, cx: &mut Context<Self>, server: &RedisServer) {
+        let mut duplicated_server = server.clone();
+        duplicated_server.id.clear();
+        duplicated_server.updated_at = None;
+        self.fill_inputs(window, cx, &duplicated_server);
+        self.add_or_update_server(window, cx);
     }
 
     /// Show confirmation dialog and remove server from configuration
@@ -717,6 +736,7 @@ impl Render for ZedisServers {
     /// - > 1200px: 3 columns
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let width = window.viewport_size().width;
+        let view = cx.entity();
 
         // Responsive grid columns based on viewport width
         let cols = match width {
@@ -734,6 +754,7 @@ impl Render for ZedisServers {
 
         let update_tooltip = i18n_servers(cx, "update_tooltip");
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
+        let duplicate_server_label = i18n_servers(cx, "duplicate_server");
 
         // Build card for each configured server (filtered by keyword)
         let children: Vec<_> = self
@@ -746,8 +767,10 @@ impl Render for ZedisServers {
             .enumerate()
             .map(|(index, server)| {
                 // Clone values for use in closures
+                let view = view.clone();
                 let select_server_id = server.id.clone();
                 let update_server = server.clone();
+                let duplicate_server = server.clone();
                 let remove_server_id = server.id.clone();
 
                 let description = server.description.as_deref().unwrap_or_default();
@@ -808,24 +831,44 @@ impl Render for ZedisServers {
                 });
 
                 // Build server card with conditional footer
-                Card::new(("servers-card", index))
-                    .icon(Icon::new(CustomIconName::DatabaseZap))
-                    .title(title)
-                    .bg(bg)
-                    .when(!description.is_empty(), |this| {
-                        this.description(description.to_string())
+                div()
+                    .id(("servers-card-context-menu", index))
+                    .context_menu({
+                        let view = view.clone();
+                        let duplicate_server = duplicate_server.clone();
+                        let duplicate_server_label = duplicate_server_label.clone();
+                        move |menu, _window, _cx| {
+                            menu.item(PopupMenuItem::new(duplicate_server_label.clone()).on_click({
+                                let view = view.clone();
+                                let duplicate_server = duplicate_server.clone();
+                                move |_, window, cx| {
+                                    view.update(cx, |this, cx| {
+                                        this.duplicate_server(window, cx, &duplicate_server);
+                                    });
+                                }
+                            }))
+                        }
                     })
-                    .when(!updated_at.is_empty(), |this| {
-                        this.footer(
-                            Label::new(updated_at)
-                                .text_sm()
-                                .text_right()
-                                .whitespace_normal()
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                    })
-                    .actions(actions)
-                    .on_click(handle_select_server)
+                    .child(
+                        Card::new(("servers-card", index))
+                            .icon(Icon::new(CustomIconName::DatabaseZap))
+                            .title(title)
+                            .bg(bg)
+                            .when(!description.is_empty(), |this| {
+                                this.description(description.to_string())
+                            })
+                            .when(!updated_at.is_empty(), |this| {
+                                this.footer(
+                                    Label::new(updated_at)
+                                        .text_sm()
+                                        .text_right()
+                                        .whitespace_normal()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                            })
+                            .actions(actions)
+                            .on_click(handle_select_server),
+                    )
             })
             .collect();
 
