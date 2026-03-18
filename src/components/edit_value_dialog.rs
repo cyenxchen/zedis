@@ -21,6 +21,7 @@
 //! - Real-time validation with error display
 //! - Save/Cancel actions
 
+use crate::components::SelectableTextState;
 use crate::helpers::codec::{CompressionFormat, EditFormat};
 use crate::helpers::get_font_family;
 use crate::helpers::is_windows;
@@ -129,6 +130,10 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         state.focus(window, cx);
     });
 
+    // Create selectable title state BEFORE open_dialog (only once)
+    let title_text: SharedString = format!("Edit: {}", key).into();
+    let selectable_title = cx.new(|cx| SelectableTextState::new(title_text, cx));
+
     // Subscribe to editor changes for validation BEFORE open_dialog (only once)
     // This prevents multiple subscriptions from being created on each render frame,
     // which was causing race conditions and session state loss during save.
@@ -158,8 +163,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         // editor_input and subscription are now captured, not recreated each frame
-
-        let title = format!("Edit: {}", key);
 
         // Clones for save handler
         let session_for_save = session.clone();
@@ -250,7 +253,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         }
 
         dialog
-            .title(title)
+            .title(selectable_title.clone())
             .overlay(true)
             .overlay_closable(false)
             .min_w(px(700.0))
