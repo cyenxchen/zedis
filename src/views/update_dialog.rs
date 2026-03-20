@@ -62,24 +62,40 @@ impl UpdateDialog {
             )
             .child(
                 h_flex()
-                    .gap_2()
-                    .child(Label::new(i18n_update(cx, "current_version")).text_sm())
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        Label::new(i18n_update(cx, "current_version"))
+                            .text_sm()
+                            .text_color(cx.theme().foreground),
+                    )
                     .child(
                         Label::new(current_version())
                             .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .child(Label::new("→").text_sm())
-                    .child(Label::new(i18n_update(cx, "new_version")).text_sm())
+                    .child(
+                        Label::new("→")
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        Label::new(i18n_update(cx, "new_version"))
+                            .text_sm()
+                            .text_color(cx.theme().foreground),
+                    )
                     .child(
                         Label::new(release.version.to_string())
                             .text_sm()
-                            .text_color(cx.theme().primary),
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().link),
                     ),
             )
             .child(
                 Label::new(i18n_update(cx, "release_notes"))
                     .text_sm()
+                    .text_color(cx.theme().foreground)
                     .font_weight(gpui::FontWeight::MEDIUM),
             )
             .child(
@@ -96,7 +112,8 @@ impl UpdateDialog {
                         } else {
                             release_notes
                         })
-                        .text_sm(),
+                        .text_sm()
+                        .text_color(cx.theme().foreground),
                     ),
             )
             .child(

@@ -149,13 +149,48 @@ pub fn current_version() -> &'static str {
     CURRENT_VERSION
 }
 
+const GITHUB_COMPARE_URL: &str = "https://api.github.com/repos/cyenxchen/zedis/compare";
+
 fn fetch_latest_release() -> Result<ReleaseInfo> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("Zedis")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
     let resp: GitHubRelease = client.get(GITHUB_API_URL).send()?.json()?;
-    parse_release(resp)
+    let mut release = parse_release(resp)?;
+
+    // If body is empty, fetch commit messages between current and new version
+    if release.body.is_empty() {
+        if let Ok(notes) = fetch_compare_notes(&client, &release.tag_name) {
+            release.body = notes;
+        }
+    }
+    Ok(release)
+}
+
+/// Fetch commit messages between current version and the new tag via GitHub compare API.
+fn fetch_compare_notes(client: &reqwest::blocking::Client, new_tag: &str) -> Result<String> {
+    let current_tag = format!("v{}", CURRENT_VERSION);
+    let url = format!("{}/{}...{}", GITHUB_COMPARE_URL, current_tag, new_tag);
+    let resp: serde_json::Value = client.get(&url).send()?.json()?;
+    let commits = resp["commits"]
+        .as_array()
+        .ok_or_else(|| Error::Update {
+            message: "No commits in compare response".to_string(),
+        })?;
+    let notes: Vec<String> = commits
+        .iter()
+        .filter_map(|c| {
+            let msg = c["commit"]["message"].as_str()?;
+            let first_line = msg.lines().next()?;
+            // Skip merge commits
+            if first_line.starts_with("Merge ") {
+                return None;
+            }
+            Some(format!("- {}", first_line))
+        })
+        .collect();
+    Ok(notes.join("\n"))
 }
 
 fn download_file(
