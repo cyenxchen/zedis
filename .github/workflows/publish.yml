@@ -21,9 +21,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             dmg_suffix: aarch64
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            dmg_suffix: x86_64
     env:
       MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
       AC_USERNAME: ${{ secrets.AC_USERNAME }}
