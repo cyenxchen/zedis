@@ -625,6 +625,7 @@ impl ZedisSidebar {
         let home_label = i18n_sidebar(cx, "home");
         let close_label = i18n_sidebar(cx, "close");
         let edit_label = i18n_sidebar(cx, "edit");
+        let reconnect_label = i18n_sidebar(cx, "reconnect");
         let list_active_color = cx.theme().list_active;
         let list_active_border_color = cx.theme().list_active_border;
 
@@ -667,6 +668,7 @@ impl ZedisSidebar {
                         .context_menu({
                             let close_label = close_label.clone();
                             let edit_label = edit_label.clone();
+                            let reconnect_label = reconnect_label.clone();
                             let right_clicked_server_id = right_clicked_server_id.clone();
                             move |menu, _window, _cx| {
                                 // Only show context menu for non-home items
@@ -676,16 +678,48 @@ impl ZedisSidebar {
                                     }
                                     let view = view_for_menu.clone();
                                     let view_for_edit = view_for_menu.clone();
+                                    let view_for_reconnect = view_for_menu.clone();
                                     let server_id_for_close = server_id.clone();
                                     let server_id_for_edit = server_id.clone();
+                                    let server_id_for_reconnect = server_id.clone();
 
-                                    // Edit menu item (before close)
+                                    // Edit menu item
                                     menu.item(PopupMenuItem::new(edit_label.clone()).on_click(move |_, window, cx| {
                                         let server_id = server_id_for_edit.clone();
                                         view_for_edit.update(cx, |this, cx| {
                                             this.open_edit_server_dialog(server_id, window, cx);
                                         });
                                     }))
+                                    // Reconnect menu item
+                                    .item(PopupMenuItem::new(reconnect_label.clone()).on_click(
+                                        move |_, _window, cx| {
+                                            let server_id = server_id_for_reconnect.clone();
+                                            view_for_reconnect.update(cx, |this, cx| {
+                                                // Clear cached connections
+                                                get_connection_manager().remove_client(&server_id);
+
+                                                let preset_credentials =
+                                                    cx.global::<ZedisGlobalStore>().read(cx).preset_credentials();
+
+                                                this.server_state.update(cx, |state, cx| {
+                                                    if state.server_id() == server_id.as_str() {
+                                                        // Current server — reconnect preserving db
+                                                        state.reconnect(preset_credentials, cx);
+                                                    } else {
+                                                        // Other server — connect with db=0
+                                                        state.select(server_id, 0, preset_credentials, cx);
+                                                    }
+                                                });
+
+                                                // Navigate to editor
+                                                cx.update_global::<ZedisGlobalStore, ()>(|store, cx| {
+                                                    store.update(cx, |state, cx| {
+                                                        state.go_to(Route::Editor, cx);
+                                                    });
+                                                });
+                                            });
+                                        },
+                                    ))
                                     // Close menu item
                                     .item(
                                         PopupMenuItem::new(close_label.clone()).on_click(move |_, _window, cx| {

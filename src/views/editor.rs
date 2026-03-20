@@ -577,20 +577,18 @@ impl ZedisEditor {
                     })),
             )
             .child(
-                if self.key_edit_mode && let Some(key_input_state) = self.key_input_state.as_ref() {
-                    div()
-                        .flex_1()
-                        .w_0()
-                        .mx_2()
-                        .child(
-                            Input::new(key_input_state).suffix(
-                                Button::new("zedis-editor-key-save-btn")
-                                    .icon(Icon::new(IconName::Check))
-                                    .on_click(cx.listener(move |this, _event, window, cx| {
-                                        this.handle_rename_key(window, cx);
-                                    })),
-                            ),
-                        )
+                if self.key_edit_mode
+                    && let Some(key_input_state) = self.key_input_state.as_ref()
+                {
+                    div().flex_1().w_0().mx_2().child(
+                        Input::new(key_input_state).suffix(
+                            Button::new("zedis-editor-key-save-btn")
+                                .icon(Icon::new(IconName::Check))
+                                .on_click(cx.listener(move |this, _event, window, cx| {
+                                    this.handle_rename_key(window, cx);
+                                })),
+                        ),
+                    )
                 } else {
                     div()
                         .flex_1()

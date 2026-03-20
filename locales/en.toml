@@ -81,6 +81,7 @@ settings_tooltip = "Open settings"
 github_tooltip = "Star on gitHub"
 close = "Close"
 edit = "Edit"
+reconnect = "Reconnect"
 
 [servers]
 master_name = "Master Name"
