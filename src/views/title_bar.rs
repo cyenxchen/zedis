@@ -12,8 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::states::{
-    FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
+use crate::{
+    helpers::MemuAction,
+    states::{
+        FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
+        i18n_update,
+    },
 };
 use gpui::{App, Context, Corner, Window, prelude::*};
 use gpui_component::{
@@ -77,6 +81,11 @@ impl ZedisTitleBar {
                 Box::new(ThemeAction::System),
             )
             .separator()
+            .menu_element_with_icon(
+                Icon::new(IconName::Globe),
+                Box::new(MemuAction::CheckForUpdates),
+                move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")),
+            )
             .menu_element_with_icon(
                 Icon::new(IconName::Settings2),
                 Box::new(SettingsAction::Editor),

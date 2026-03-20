@@ -21,6 +21,7 @@ use serde::Deserialize;
 pub enum MemuAction {
     Quit,
     About,
+    CheckForUpdates,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]

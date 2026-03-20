@@ -172,6 +172,10 @@ pub struct ZedisAppState {
     /// Preset credentials for auto-authentication (encrypted)
     #[serde(default)]
     preset_credentials: Vec<EncryptedPresetCredential>,
+    /// Version tag the user chose to skip (e.g., "v0.2.0")
+    skipped_version: Option<String>,
+    /// ISO8601 timestamp of last update check
+    last_update_check: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -327,6 +331,19 @@ impl ZedisAppState {
     }
     pub fn set_max_truncate_length(&mut self, max_truncate_length: usize) {
         self.max_truncate_length = Some(max_truncate_length);
+    }
+
+    pub fn skipped_version(&self) -> Option<&str> {
+        self.skipped_version.as_deref()
+    }
+    pub fn set_skipped_version(&mut self, version: Option<String>) {
+        self.skipped_version = version;
+    }
+    pub fn last_update_check(&self) -> Option<&str> {
+        self.last_update_check.as_deref()
+    }
+    pub fn set_last_update_check(&mut self, ts: String) {
+        self.last_update_check = Some(ts);
     }
 
     /// Get preset credentials (decrypted)

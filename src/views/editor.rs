@@ -347,20 +347,22 @@ impl ZedisEditor {
                     .clean_on_escape()
                     .placeholder(i18n_common(cx, "key_placeholder"))
             });
-            self._subscriptions.push(cx.subscribe_in(
-                &key_input_state,
-                window,
-                |view, _state, event, window, cx| match &event {
-                    InputEvent::PressEnter { .. } => {
-                        view.handle_rename_key(window, cx);
-                    }
-                    InputEvent::Blur => {
-                        view.key_edit_mode = false;
-                        cx.notify();
-                    }
-                    _ => {}
-                },
-            ));
+            self._subscriptions.push(
+                cx.subscribe_in(
+                    &key_input_state,
+                    window,
+                    |view, _state, event, window, cx| match &event {
+                        InputEvent::PressEnter { .. } => {
+                            view.handle_rename_key(window, cx);
+                        }
+                        InputEvent::Blur => {
+                            view.key_edit_mode = false;
+                            cx.notify();
+                        }
+                        _ => {}
+                    },
+                ),
+            );
             self.key_input_state = Some(key_input_state);
         }
         self.key_edit_mode = true;

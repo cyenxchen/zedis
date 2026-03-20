@@ -16,10 +16,10 @@ use crate::connection::get_connection_manager;
 use crate::{
     assets::CustomIconName,
     connection::RedisServer,
-    helpers::{is_development, is_windows, validate_common_string, validate_host, validate_long_string},
+    helpers::{MemuAction, is_development, is_windows, validate_common_string, validate_host, validate_long_string},
     states::{
         FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
-        ZedisServerState, i18n_common, i18n_servers, i18n_sidebar,
+        ZedisServerState, i18n_common, i18n_servers, i18n_sidebar, i18n_update,
     },
 };
 use gpui::{
@@ -881,6 +881,12 @@ impl ZedisSidebar {
                                 },
                             )
                     },
+                )
+                .separator()
+                .menu_element_with_icon(
+                    Icon::new(IconName::Globe),
+                    Box::new(MemuAction::CheckForUpdates),
+                    move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")).p(LABEL_PADDING),
                 )
                 .menu_element_with_icon(
                     Icon::new(IconName::Settings2),

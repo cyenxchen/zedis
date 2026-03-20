@@ -725,12 +725,12 @@ impl ZedisServerState {
                     let pttl_val = result_iter.next().ok_or(Error::Invalid {
                         message: "Missing PTTL result".to_string(),
                     })?;
-                    let (dump, pttl): (Vec<u8>, i64) = redis::from_redis_value(
-                        redis::Value::Array(vec![dump_val, pttl_val]),
-                    )
-                    .map_err(|e| Error::Invalid {
-                        message: format!("Failed to parse DUMP/PTTL result: {}", e),
-                    })?;
+                    let (dump, pttl): (Vec<u8>, i64) =
+                        redis::from_redis_value(redis::Value::Array(vec![dump_val, pttl_val])).map_err(|e| {
+                            Error::Invalid {
+                                message: format!("Failed to parse DUMP/PTTL result: {}", e),
+                            }
+                        })?;
                     let hex_key = bytes_to_compact_hex(key.as_bytes());
                     let hex_dump = bytes_to_compact_hex(&dump);
                     lines.push(format!("{},{},{}", hex_key, hex_dump, pttl));
@@ -787,17 +787,14 @@ impl ZedisServerState {
                         parse_fail_count += 1;
                         continue;
                     }
-                    let (key_bytes, dump_bytes, pttl) = match (
-                        hex_to_bytes(parts[0]),
-                        hex_to_bytes(parts[1]),
-                        parts[2].parse::<i64>(),
-                    ) {
-                        (Ok(k), Ok(d), Ok(t)) => (k, d, t),
-                        _ => {
-                            parse_fail_count += 1;
-                            continue;
-                        }
-                    };
+                    let (key_bytes, dump_bytes, pttl) =
+                        match (hex_to_bytes(parts[0]), hex_to_bytes(parts[1]), parts[2].parse::<i64>()) {
+                            (Ok(k), Ok(d), Ok(t)) => (k, d, t),
+                            _ => {
+                                parse_fail_count += 1;
+                                continue;
+                            }
+                        };
                     let restore_ttl = if pttl < 0 { 0 } else { pttl };
                     let key = String::from_utf8_lossy(&key_bytes);
                     pipeline
