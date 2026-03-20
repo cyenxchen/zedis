@@ -28,3 +28,6 @@ target
 /target
 
 cargo-sources.json
+
+# Claude Code
+.claude/
