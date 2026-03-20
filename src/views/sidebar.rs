@@ -16,6 +16,7 @@ use crate::connection::get_connection_manager;
 use crate::{
     assets::CustomIconName,
     connection::RedisServer,
+    constants::GITHUB_REPOSITORY_URL,
     helpers::{MemuAction, is_development, is_windows, validate_common_string, validate_host, validate_long_string},
     states::{
         FontSize, FontSizeAction, LocaleAction, Route, ServerEvent, SettingsAction, ThemeAction, ZedisGlobalStore,
@@ -947,7 +948,7 @@ impl ZedisSidebar {
                         .child(Label::new("ZEDIS").text_xs()),
                 )
                 .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.open_url("https://github.com/vicanso/zedis");
+                    cx.open_url(GITHUB_REPOSITORY_URL);
                 })),
         )
     }

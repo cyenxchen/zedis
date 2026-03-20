@@ -238,6 +238,8 @@ impl Render for Zedis {
             .on_action(cx.listener(|_this, e: &MemuAction, _window, cx| {
                 if *e == MemuAction::CheckForUpdates {
                     check_for_updates(true, cx);
+                } else {
+                    cx.propagate();
                 }
             }))
     }
