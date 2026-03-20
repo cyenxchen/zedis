@@ -393,12 +393,11 @@ fn main() {
 
         // Auto-check for updates (skip dev and App Store builds)
         if !is_development() && !is_app_store_build() {
-            cx.spawn(async move |cx| {
-                // Initial delay: 5 seconds
-                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-                cx.update(|cx| check_for_updates(false, cx)).ok();
+            // Check immediately on startup
+            check_for_updates(false, cx);
 
-                // Check every 24 hours
+            // Then check every 24 hours
+            cx.spawn(async move |cx| {
                 const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
                 loop {
                     cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
