@@ -22,15 +22,19 @@ mod fs;
 mod protobuf;
 mod string;
 mod time;
+mod updater;
 mod validate;
 
 pub use action::*;
 pub use common::*;
 pub use font::get_font_family;
+#[cfg(target_os = "macos")]
+pub use fs::get_app_bundle_path;
 pub use fs::{get_home_dir, get_or_create_config_dir, is_app_store_build};
 pub use protobuf::{decode_raw_to_json, is_likely_protobuf};
 pub use string::*;
 pub use time::unix_ts;
+pub use updater::install_update;
 pub use validate::*;
 pub fn is_development() -> bool {
     env::var("RUST_ENV").unwrap_or_default() == "dev"

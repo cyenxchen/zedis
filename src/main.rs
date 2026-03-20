@@ -2,6 +2,7 @@
 use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, new_hot_keys};
+use crate::states::update::{ZedisUpdateState, ZedisUpdateStore, check_for_updates};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
@@ -234,6 +235,11 @@ impl Render for Zedis {
                     });
                 }
             }))
+            .on_action(cx.listener(|_this, e: &MemuAction, _window, cx| {
+                if *e == MemuAction::CheckForUpdates {
+                    check_for_updates(true, cx);
+                }
+            }))
     }
 }
 
@@ -331,6 +337,8 @@ fn main() {
             Theme::change(theme, None, cx);
         }
         cx.set_global(app_store);
+        let update_state = cx.new(|_| ZedisUpdateState::default());
+        cx.set_global(ZedisUpdateStore::new(update_state));
         cx.bind_keys(new_hot_keys());
         cx.on_action(|e: &MemuAction, cx: &mut App| match e {
             MemuAction::Quit => {
@@ -338,6 +346,9 @@ fn main() {
             }
             MemuAction::About => {
                 open_about_window(cx);
+            }
+            MemuAction::CheckForUpdates => {
+                check_for_updates(true, cx);
             }
         });
         cx.set_menus(vec![Menu {
@@ -377,5 +388,22 @@ fn main() {
             Ok::<_, anyhow::Error>(())
         })
         .detach();
+
+        // Auto-check for updates (skip dev and App Store builds)
+        if !is_development() && !is_app_store_build() {
+            cx.spawn(async move |cx| {
+                // Initial delay: 5 seconds
+                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+                cx.update(|cx| check_for_updates(false, cx)).ok();
+
+                // Check every 24 hours
+                const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+                loop {
+                    cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
+                    cx.update(|cx| check_for_updates(false, cx)).ok();
+                }
+            })
+            .detach();
+        }
     });
 }

@@ -161,3 +161,13 @@ pub fn get_or_create_config_dir() -> Result<PathBuf> {
 
     Ok(config_dir.to_path_buf())
 }
+
+/// Returns the macOS `.app` bundle path by navigating up from the executable.
+#[cfg(target_os = "macos")]
+pub fn get_app_bundle_path() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    exe.parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+}

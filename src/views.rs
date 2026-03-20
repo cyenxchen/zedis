@@ -26,6 +26,7 @@ mod setting_editor;
 mod sidebar;
 mod status_bar;
 mod title_bar;
+mod update_dialog;
 mod zset_editor;
 
 pub use about::open_about_window;
@@ -42,4 +43,5 @@ pub use setting_editor::ZedisSettingEditor;
 pub use sidebar::ZedisSidebar;
 pub use status_bar::ZedisStatusBar;
 pub use title_bar::ZedisTitleBar;
+pub use update_dialog::open_update_dialog;
 pub use zset_editor::ZedisZsetEditor;

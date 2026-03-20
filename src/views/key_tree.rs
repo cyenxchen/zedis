@@ -900,21 +900,19 @@ impl ZedisKeyTree {
                         let ss_dup = server_state.clone();
                         let ss_del = server_state.clone();
 
-                        menu.item(
-                            PopupMenuItem::new(i18n_key_tree(cx, "export_key")).on_click({
-                                let key = key.clone();
-                                move |_, _window, cx| {
-                                    spawn_export_dialog(vec![key.clone()], ss_export.clone(), cx);
-                                }
-                            }),
-                        )
-                        .item(PopupMenuItem::new(i18n_key_tree(cx, "duplicate_key")).on_click(
+                        menu.item(PopupMenuItem::new(i18n_key_tree(cx, "export_key")).on_click({
+                            let key = key.clone();
                             move |_, _window, cx| {
+                                spawn_export_dialog(vec![key.clone()], ss_export.clone(), cx);
+                            }
+                        }))
+                        .item(
+                            PopupMenuItem::new(i18n_key_tree(cx, "duplicate_key")).on_click(move |_, _window, cx| {
                                 ss_dup.update(cx, |state, cx| {
                                     state.duplicate_key(key_dup.clone(), cx);
                                 });
-                            },
-                        ))
+                            }),
+                        )
                         .separator()
                         .item(
                             PopupMenuItem::new(i18n_key_tree(cx, "delete_key")).on_click(move |_, _window, cx| {

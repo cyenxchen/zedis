@@ -347,20 +347,22 @@ impl ZedisEditor {
                     .clean_on_escape()
                     .placeholder(i18n_common(cx, "key_placeholder"))
             });
-            self._subscriptions.push(cx.subscribe_in(
-                &key_input_state,
-                window,
-                |view, _state, event, window, cx| match &event {
-                    InputEvent::PressEnter { .. } => {
-                        view.handle_rename_key(window, cx);
-                    }
-                    InputEvent::Blur => {
-                        view.key_edit_mode = false;
-                        cx.notify();
-                    }
-                    _ => {}
-                },
-            ));
+            self._subscriptions.push(
+                cx.subscribe_in(
+                    &key_input_state,
+                    window,
+                    |view, _state, event, window, cx| match &event {
+                        InputEvent::PressEnter { .. } => {
+                            view.handle_rename_key(window, cx);
+                        }
+                        InputEvent::Blur => {
+                            view.key_edit_mode = false;
+                            cx.notify();
+                        }
+                        _ => {}
+                    },
+                ),
+            );
             self.key_input_state = Some(key_input_state);
         }
         self.key_edit_mode = true;
@@ -574,30 +576,24 @@ impl ZedisEditor {
                         window.push_notification(Notification::info(i18n_editor(cx, "copied_key_to_clipboard")), cx);
                     })),
             )
-            .child(
-                if self.key_edit_mode && self.key_input_state.is_some() {
-                    div()
-                        .flex_1()
-                        .w_0()
-                        .mx_2()
-                        .child(
-                            Input::new(self.key_input_state.as_ref().unwrap()).suffix(
-                                Button::new("zedis-editor-key-save-btn")
-                                    .icon(Icon::new(IconName::Check))
-                                    .on_click(cx.listener(move |this, _event, window, cx| {
-                                        this.handle_rename_key(window, cx);
-                                    })),
-                            ),
-                        )
-                } else {
-                    div()
-                        .flex_1()
-                        .w_0()
-                        .overflow_hidden()
-                        .mx_2()
-                        .child(self.key_text_state.clone())
-                },
-            )
+            .child(if self.key_edit_mode && self.key_input_state.is_some() {
+                div().flex_1().w_0().mx_2().child(
+                    Input::new(self.key_input_state.as_ref().unwrap()).suffix(
+                        Button::new("zedis-editor-key-save-btn")
+                            .icon(Icon::new(IconName::Check))
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                this.handle_rename_key(window, cx);
+                            })),
+                    ),
+                )
+            } else {
+                div()
+                    .flex_1()
+                    .w_0()
+                    .overflow_hidden()
+                    .mx_2()
+                    .child(self.key_text_state.clone())
+            })
             .children(btns)
     }
     /// Clean up unused editors when switching between key types

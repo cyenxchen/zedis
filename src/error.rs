@@ -32,6 +32,10 @@ pub enum Error {
     Ssh { source: russh::Error },
     #[snafu(display("Key error: {source}"))]
     Key { source: russh::keys::Error },
+    #[snafu(display("Http error: {source}"))]
+    Http { source: reqwest::Error },
+    #[snafu(display("Update error: {message}"))]
+    Update { message: String },
 }
 
 impl From<redis::RedisError> for Error {
@@ -73,5 +77,11 @@ impl From<russh::Error> for Error {
 impl From<russh::keys::Error> for Error {
     fn from(source: russh::keys::Error) -> Self {
         Error::Key { source }
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(source: reqwest::Error) -> Self {
+        Error::Http { source }
     }
 }
