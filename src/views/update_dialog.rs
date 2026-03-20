@@ -14,8 +14,8 @@
 
 use crate::states::i18n_update;
 use crate::states::update::{
-    UpdateStatus, ZedisUpdateState, ZedisUpdateStore, check_for_updates, current_version, download_update, restart_app,
-    skip_version,
+    UpdateStatus, ZedisUpdateState, ZedisUpdateStore, check_for_updates, current_version, download_update, reset_status,
+    restart_app, skip_version,
 };
 use gpui::{
     App, Bounds, Entity, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px, size,
@@ -119,7 +119,8 @@ impl UpdateDialog {
                     .child(
                         Button::new("remind-later")
                             .label(i18n_update(cx, "remind_later"))
-                            .on_click(|_, window, _cx| {
+                            .on_click(|_, window, cx| {
+                                reset_status(cx);
                                 window.remove_window();
                             }),
                     )
@@ -270,23 +271,20 @@ impl UpdateDialog {
             .items_center()
             .justify_center()
             .child(
-                Label::new(i18n_update(cx, "up_to_date"))
-                    .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
-            )
-            .child(
                 Label::new(format!(
                     "{} {}",
-                    i18n_update(cx, "up_to_date_detail"),
+                    i18n_update(cx, "up_to_date"),
                     current_version()
                 ))
-                .text_sm()
-                .text_color(cx.theme().muted_foreground),
+                .text_lg()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(cx.theme().foreground),
             )
             .child(
                 Button::new("close")
                     .label(i18n_update(cx, "close"))
-                    .on_click(|_, window, _cx| {
+                    .on_click(|_, window, cx| {
+                        reset_status(cx);
                         window.remove_window();
                     }),
             )
@@ -330,7 +328,8 @@ impl UpdateDialog {
                     .child(
                         Button::new("close-error")
                             .label(i18n_update(cx, "close"))
-                            .on_click(|_, window, _cx| {
+                            .on_click(|_, window, cx| {
+                                reset_status(cx);
                                 window.remove_window();
                             }),
                     )
