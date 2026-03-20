@@ -60,6 +60,10 @@ pub struct ZedisEditor {
     ttl_edit_mode: bool,
     ttl_input_state: Entity<InputState>,
 
+    /// Key name editing state
+    key_edit_mode: bool,
+    key_input_state: Option<Entity<InputState>>,
+
     /// Track when a key was selected to handle loading states smoothly
     selected_key_at: Option<Instant>,
 
@@ -106,6 +110,7 @@ impl ZedisEditor {
             |this, server_state, event, window, cx| match event {
                 ServerEvent::KeySelected(key) => {
                     this.selected_key_at = Some(Instant::now());
+                    this.key_edit_mode = false;
                     // Update the key text state with selected key
                     this.key_text_state.update(cx, |state, _cx| {
                         state.set_text(key.clone());
@@ -160,6 +165,8 @@ impl ZedisEditor {
             key_text_state,
             ttl_edit_mode: false,
             ttl_input_state,
+            key_edit_mode: false,
+            key_input_state: None,
             should_enter_ttl_edit_mode: None,
             focus_handle,
             _subscriptions: subscriptions,
@@ -323,6 +330,66 @@ impl ZedisEditor {
         });
         cx.notify();
     }
+    fn enter_key_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.read(cx);
+        let Some(key) = server_state.key() else {
+            return;
+        };
+        let is_busy = server_state.value().map(|v| v.is_busy()).unwrap_or(false);
+        if is_busy {
+            return;
+        }
+        // Lazily create the InputState entity and subscribe to its events
+        if self.key_input_state.is_none() {
+            let key_input_state = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .validate(|s, _cx| s.is_empty() || !s.trim().is_empty())
+                    .clean_on_escape()
+                    .placeholder(i18n_common(cx, "key_placeholder"))
+            });
+            self._subscriptions.push(cx.subscribe_in(
+                &key_input_state,
+                window,
+                |view, _state, event, window, cx| match &event {
+                    InputEvent::PressEnter { .. } => {
+                        view.handle_rename_key(window, cx);
+                    }
+                    InputEvent::Blur => {
+                        view.key_edit_mode = false;
+                        cx.notify();
+                    }
+                    _ => {}
+                },
+            ));
+            self.key_input_state = Some(key_input_state);
+        }
+        self.key_edit_mode = true;
+        if let Some(input_state) = &self.key_input_state {
+            input_state.update(cx, move |state, cx| {
+                state.set_value(key, window, cx);
+                state.focus(window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn handle_rename_key(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let old_key = self.server_state.read(cx).key().unwrap_or_default();
+        if old_key.is_empty() {
+            return;
+        }
+        self.key_edit_mode = false;
+        if let Some(key_input_state) = &self.key_input_state {
+            let new_key: SharedString = key_input_state.read(cx).value().trim().to_string().into();
+            if !new_key.is_empty() && new_key != old_key {
+                self.server_state.update(cx, move |state, cx| {
+                    state.rename_key(old_key, new_key, cx);
+                });
+            }
+        }
+        cx.notify();
+    }
+
     /// Render the key information bar with actions (copy, save, TTL, delete)
     fn render_select_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let server_state = self.server_state.read(cx);
@@ -358,6 +425,22 @@ impl ZedisEditor {
 
         // Show loading only if busy and not recently selected (avoid flashing)
         let should_show_loading = is_busy && !self.is_selected_key_recently();
+        // Add rename key button (only when not in edit mode)
+        if !self.key_edit_mode {
+            btns.push(
+                Button::new("zedis-editor-edit-key")
+                    .ml_2()
+                    .outline()
+                    .disabled(should_show_loading)
+                    .tooltip(i18n_editor(cx, "edit_key_tooltip"))
+                    .icon(CustomIconName::FilePenLine)
+                    .on_click(cx.listener(move |this, _event, window, cx| {
+                        this.enter_key_edit_mode(window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+
         // Add size label if available
         if !size.is_empty() {
             let size_label = i18n_common(cx, "size");
@@ -492,13 +575,28 @@ impl ZedisEditor {
                     })),
             )
             .child(
-                // Key name display - w_0 prevents long keys from breaking layout
-                div()
-                    .flex_1()
-                    .w_0()
-                    .overflow_hidden()
-                    .mx_2()
-                    .child(self.key_text_state.clone()),
+                if self.key_edit_mode && self.key_input_state.is_some() {
+                    div()
+                        .flex_1()
+                        .w_0()
+                        .mx_2()
+                        .child(
+                            Input::new(self.key_input_state.as_ref().unwrap()).suffix(
+                                Button::new("zedis-editor-key-save-btn")
+                                    .icon(Icon::new(IconName::Check))
+                                    .on_click(cx.listener(move |this, _event, window, cx| {
+                                        this.handle_rename_key(window, cx);
+                                    })),
+                            ),
+                        )
+                } else {
+                    div()
+                        .flex_1()
+                        .w_0()
+                        .overflow_hidden()
+                        .mx_2()
+                        .child(self.key_text_state.clone())
+                },
             )
             .children(btns)
     }

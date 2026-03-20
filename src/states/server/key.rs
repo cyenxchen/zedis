@@ -571,6 +571,41 @@ impl ZedisServerState {
         );
     }
 
+    /// Renames a key using the Redis RENAME command.
+    /// Caller is expected to pass a trimmed, validated `new_key`.
+    pub fn rename_key(&mut self, old_key: SharedString, new_key: SharedString, cx: &mut Context<Self>) {
+        if new_key.is_empty() || old_key == new_key {
+            return;
+        }
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let old_key_for_callback = old_key.clone();
+        let new_key_for_callback = new_key.clone();
+        self.spawn(
+            ServerTask::RenameKey,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: () = cmd("RENAME")
+                    .arg(old_key.as_str())
+                    .arg(new_key.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            move |this, result, cx| {
+                if result.is_ok() {
+                    let key_type = this.keys.remove(&old_key_for_callback).unwrap_or(KeyType::Unknown);
+                    this.keys.insert(new_key_for_callback.clone(), key_type);
+                    this.key_tree_id = Uuid::now_v7().to_string().into();
+                    cx.emit(ServerEvent::KeySelected(new_key_for_callback.clone()));
+                    this.key = Some(new_key_for_callback);
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     pub fn add_key(&mut self, category: SharedString, key: SharedString, ttl: SharedString, cx: &mut Context<Self>) {
         let server_id = self.server_id.clone();
         let db = self.db;
