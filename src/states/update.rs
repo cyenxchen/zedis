@@ -160,10 +160,10 @@ fn fetch_latest_release() -> Result<ReleaseInfo> {
     let mut release = parse_release(resp)?;
 
     // If body is empty, fetch commit messages between current and new version
-    if release.body.is_empty() {
-        if let Ok(notes) = fetch_compare_notes(&client, &release.tag_name) {
-            release.body = notes;
-        }
+    if release.body.is_empty()
+        && let Ok(notes) = fetch_compare_notes(&client, &release.tag_name)
+    {
+        release.body = notes;
     }
     Ok(release)
 }
@@ -230,7 +230,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
     let state_entity = store.state();
 
     // Guard: skip if already checking or downloading
-    {
+    let dialog_already_open = {
         let state = state_entity.read(cx);
         if matches!(
             state.status,
@@ -238,7 +238,12 @@ pub fn check_for_updates(manual: bool, cx: &App) {
         ) {
             return;
         }
-    }
+        // If status is Error or UpToDate, the dialog is already open (user is retrying)
+        matches!(
+            state.status,
+            UpdateStatus::Error(_) | UpdateStatus::UpToDate | UpdateStatus::Available(_)
+        )
+    };
 
     // For auto-checks, skip if checked recently (within 1 hour)
     if !manual {
@@ -263,18 +268,16 @@ pub fn check_for_updates(manual: bool, cx: &App) {
             cx.notify();
         });
 
-        // Fetch release on background thread
-        let result = std::thread::spawn(fetch_latest_release)
-            .join()
-            .map_err(|_| Error::Update {
+        // Fetch release on background thread (use channel to avoid blocking the executor)
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(fetch_latest_release());
+        });
+        let result = rx.await.unwrap_or_else(|_| {
+            Err(Error::Update {
                 message: "Failed to check for updates".to_string(),
-            });
-
-        let result = match result {
-            Ok(Ok(release)) => Ok(release),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(e),
-        };
+            })
+        });
 
         match result {
             Ok(release) => {
@@ -309,18 +312,20 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                         state.status = UpdateStatus::Available(Box::new(release));
                         cx.notify();
                     });
-                    // Open update dialog
-                    cx.update(|cx| {
-                        crate::views::open_update_dialog(cx);
-                    })
-                    .ok();
+                    // Open update dialog only if not already open
+                    if !dialog_already_open {
+                        cx.update(|cx| {
+                            crate::views::open_update_dialog(cx);
+                        })
+                        .ok();
+                    }
                 } else {
                     info!("Already up to date ({})", current);
                     let _ = state_entity.update(cx, |state, cx| {
                         state.status = UpdateStatus::UpToDate;
                         cx.notify();
                     });
-                    if manual {
+                    if manual && !dialog_already_open {
                         cx.update(|cx| {
                             crate::views::open_update_dialog(cx);
                         })
@@ -335,7 +340,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                     state.status = UpdateStatus::Error(msg);
                     cx.notify();
                 });
-                if manual {
+                if manual && !dialog_already_open {
                     cx.update(|cx| {
                         crate::views::open_update_dialog(cx);
                     })
@@ -455,21 +460,25 @@ pub fn download_update(cx: &App) {
                     });
 
                     let install_path = download_path.clone();
-                    let install_result = std::thread::spawn(move || crate::helpers::install_update(&install_path))
-                        .join()
-                        .map_err(|_| Error::Update {
+                    let (install_tx, install_rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let _ = install_tx.send(crate::helpers::install_update(&install_path));
+                    });
+                    let install_result = install_rx.await.unwrap_or_else(|_| {
+                        Err(Error::Update {
                             message: "Install thread panicked".to_string(),
-                        });
+                        })
+                    });
 
                     match install_result {
-                        Ok(Ok(())) => {
+                        Ok(()) => {
                             info!("Update installed successfully");
                             let _ = state_entity.update(cx, |state, cx| {
                                 state.status = UpdateStatus::Installed;
                                 cx.notify();
                             });
                         }
-                        Ok(Err(e)) | Err(e) => {
+                        Err(e) => {
                             let msg = format!("Installation failed: {}", e);
                             error!("{}", msg);
                             let _ = state_entity.update(cx, |state, cx| {
@@ -492,6 +501,19 @@ pub fn download_update(cx: &App) {
                 }
             }
         }
+    })
+    .detach();
+}
+
+/// Reset update status to Idle (e.g., when user closes the dialog).
+pub fn reset_status(cx: &App) {
+    let store = cx.global::<ZedisUpdateStore>().clone();
+    let state_entity = store.state();
+    cx.spawn(async move |cx| {
+        let _ = state_entity.update(cx, |state, cx| {
+            state.status = UpdateStatus::Idle;
+            cx.notify();
+        });
     })
     .detach();
 }
