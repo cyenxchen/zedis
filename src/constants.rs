@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub const GITHUB_REPOSITORY_URL: &str = "https://github.com/cyenxchen/zedis";
 pub const SIDEBAR_WIDTH: f32 = 80.0;
 pub const KEY_TREE_MIN_WIDTH: f32 = 275.0;
 pub const KEY_TREE_MAX_WIDTH: f32 = 800.0;

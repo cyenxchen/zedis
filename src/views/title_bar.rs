@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::{
+    constants::GITHUB_REPOSITORY_URL,
     helpers::MemuAction,
     states::{
         FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
@@ -120,7 +121,7 @@ impl Render for ZedisTitleBar {
                             .icon(IconName::GitHub)
                             .small()
                             .ghost()
-                            .on_click(|_, _, cx| cx.open_url("https://github.com/vicanso/zedis")),
+                            .on_click(|_, _, cx| cx.open_url(GITHUB_REPOSITORY_URL)),
                     ),
             )
     }

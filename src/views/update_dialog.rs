@@ -14,8 +14,8 @@
 
 use crate::states::i18n_update;
 use crate::states::update::{
-    UpdateStatus, ZedisUpdateState, ZedisUpdateStore, check_for_updates, current_version, download_update, reset_status,
-    restart_app, skip_version,
+    UpdateStatus, ZedisUpdateState, ZedisUpdateStore, check_for_updates, current_version, download_update,
+    reset_status, restart_app, skip_version,
 };
 use gpui::{
     App, Bounds, Entity, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px, size,
@@ -271,14 +271,10 @@ impl UpdateDialog {
             .items_center()
             .justify_center()
             .child(
-                Label::new(format!(
-                    "{} {}",
-                    i18n_update(cx, "up_to_date"),
-                    current_version()
-                ))
-                .text_lg()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(cx.theme().foreground),
+                Label::new(format!("{} {}", i18n_update(cx, "up_to_date"), current_version()))
+                    .text_lg()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 Button::new("close")
@@ -385,5 +381,11 @@ pub fn open_update_dialog(cx: &mut App) {
         ..Default::default()
     };
 
-    let _ = cx.open_window(options, |window, cx| cx.new(|cx| UpdateDialog::new(state, window, cx)));
+    let _ = cx.open_window(options, |window, cx| {
+        window.on_window_should_close(cx, |_window, cx| {
+            reset_status(cx);
+            true
+        });
+        cx.new(|cx| UpdateDialog::new(state, window, cx))
+    });
 }
