@@ -1,14 +1,14 @@
 [package]
 name = "zedis"
-version = "0.1.8"
+version = "0.2.8"
 edition = "2024"
 authors = ["Tree Xie <tree.xie@outlook.com>"]
 categories = ["database"]
 keywords = ["redis manager", "gpui", "redis client"]
 description = "A blazing-fast, native Redis GUI built with Rust and GPUI."
 license = "Apache-2.0"
-homepage = "https://github.com/vicanso/zedis"
-repository = "https://github.com/vicanso/zedis"
+homepage = "https://github.com/cyenxchen/zedis"
+repository = "https://github.com/cyenxchen/zedis"
 exclude = ["test/*", "Cargo.lock"]
 readme = "./README.md"
 build = "build.rs"
