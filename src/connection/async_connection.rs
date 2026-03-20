@@ -25,7 +25,7 @@ use redis::{
     cluster_async::ClusterConnection,
     cmd,
 };
-use std::{sync::LazyLock, time::Duration};
+use std::{collections::HashSet, sync::LazyLock, time::Duration};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -98,6 +98,14 @@ pub async fn open_single_connection(config: &RedisServer, db: usize) -> Result<M
     // Cache the connection in the pool for future reuse
     CONNECTION_POOL.insert(key, conn.clone());
     Ok(conn)
+}
+
+/// Removes all pooled connections whose config hash is in the given set.
+///
+/// This is used when closing or reconnecting a server to ensure
+/// stale/broken connections are not reused.
+pub fn clear_pool_connections_batch(config_hashes: &HashSet<u64>) {
+    CONNECTION_POOL.retain(|key, _| !config_hashes.contains(&key.0));
 }
 
 /// Creates a Redis client from the server configuration.

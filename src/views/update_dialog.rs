@@ -75,11 +75,7 @@ impl UpdateDialog {
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(cx.theme().muted_foreground),
                     )
-                    .child(
-                        Label::new("→")
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground),
-                    )
+                    .child(Label::new("→").text_sm().text_color(cx.theme().muted_foreground))
                     .child(
                         Label::new(i18n_update(cx, "new_version"))
                             .text_sm()

@@ -14,8 +14,8 @@
 
 use super::{
     async_connection::{
-        AuthSource, RedisAsyncConn, is_auth_error, open_single_connection, query_async_masters,
-        try_open_with_preset_credentials,
+        AuthSource, RedisAsyncConn, clear_pool_connections_batch, is_auth_error, open_single_connection,
+        query_async_masters, try_open_with_preset_credentials,
     },
     config::{RedisServer, get_config},
     ssh_cluster_connection::SshMultiplexedConnection,
@@ -481,7 +481,21 @@ impl ConnectionManager {
         }
     }
     pub fn remove_client(&self, name: &str) {
-        self.clients.remove(name);
+        let prefix = format!("{}:", name);
+        let mut hashes = HashSet::new();
+        self.clients.retain(|key, client| {
+            if key.starts_with(&prefix) {
+                for node in &client.nodes {
+                    hashes.insert(node.server.get_hash());
+                }
+                false
+            } else {
+                true
+            }
+        });
+        if !hashes.is_empty() {
+            clear_pool_connections_batch(&hashes);
+        }
     }
     /// Retrieves or creates a RedisClient for the given configuration name.
     /// Returns the client and authentication source.

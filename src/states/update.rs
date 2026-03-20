@@ -160,10 +160,10 @@ fn fetch_latest_release() -> Result<ReleaseInfo> {
     let mut release = parse_release(resp)?;
 
     // If body is empty, fetch commit messages between current and new version
-    if release.body.is_empty() {
-        if let Ok(notes) = fetch_compare_notes(&client, &release.tag_name) {
-            release.body = notes;
-        }
+    if release.body.is_empty()
+        && let Ok(notes) = fetch_compare_notes(&client, &release.tag_name)
+    {
+        release.body = notes;
     }
     Ok(release)
 }
@@ -173,11 +173,9 @@ fn fetch_compare_notes(client: &reqwest::blocking::Client, new_tag: &str) -> Res
     let current_tag = format!("v{}", CURRENT_VERSION);
     let url = format!("{}/{}...{}", GITHUB_COMPARE_URL, current_tag, new_tag);
     let resp: serde_json::Value = client.get(&url).send()?.json()?;
-    let commits = resp["commits"]
-        .as_array()
-        .ok_or_else(|| Error::Update {
-            message: "No commits in compare response".to_string(),
-        })?;
+    let commits = resp["commits"].as_array().ok_or_else(|| Error::Update {
+        message: "No commits in compare response".to_string(),
+    })?;
     let notes: Vec<String> = commits
         .iter()
         .filter_map(|c| {
