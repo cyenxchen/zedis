@@ -18,45 +18,29 @@ make bundle        # cargo bundle --release --features mimalloc (create native i
 make udeps         # cargo +nightly udeps (find unused dependencies)
 ```
 
+## Toolchain
+
+- Rust 1.92.0+
+- rustfmt: `max_width = 120`
+- Clippy: `unwrap_used = "deny"` (在 Cargo.toml 中配置)
+
 ## Architecture
 
-The codebase follows a modular, state-driven architecture:
-
-```
-src/
-├── main.rs              # GPUI app initialization, window setup, event routing
-├── connection/          # Redis connectivity layer
-│   ├── config.rs        # Server configuration + TOML persistence
-│   ├── async_connection.rs  # Async Redis connection wrapper
-│   └── manager.rs       # Connection pooling, topology detection, cluster support
-├── states/              # Centralized state management
-│   ├── app.rs           # Global app state (theme, locale, font size, routes)
-│   ├── server.rs        # Redis server state + event system
-│   └── server/          # Data-specific states per Redis type (value, key, string, hash, list, set, zset, stat, event)
-├── views/               # GPUI view components (rendering layer)
-├── components/          # Reusable UI components
-├── helpers/             # Utility functions
-└── error.rs             # Error types (snafu-based)
-```
+State-driven architecture: `connection/` (Redis 连接层) → `states/` (状态管理) → `views/` (GPUI 视图) → `components/` (可复用组件)。`helpers/` 包含编解码等工具函数。
 
 ### Key Patterns
 
-1. **State Management**: Global store (`ZedisGlobalStore`) for app-wide state; `ZedisServerState` for Redis-specific state. Components subscribe to `ServerEvent` enum for reactive updates.
-
-2. **Async Execution**: Tasks spawned via `cx.spawn(async { ... })`. Long-running Redis commands use GPUI async/await patterns.
-
-3. **Connection Management**: Singleton `ConnectionManager` via `LazyLock`. Auto-detects Standalone/Cluster/Sentinel topologies.
-
-4. **Value Transformation Pipeline**: Raw Redis Value → Format Detection (JSON, MessagePack, Text, Binary) → Decompression (LZ4, SNAPPY, GZIP, ZSTD) → Type-Specific Parsing → Display Formatting
-
-5. **Virtual Scrolling**: Custom `ZedisKvDelegate` for efficient rendering of large key lists with SCAN-based pagination.
+- **State**: `ZedisGlobalStore` (全局) + `ZedisServerState` (每个 Redis 连接)，组件通过 `ServerEvent` 响应式更新
+- **Async**: 通过 `cx.spawn(async { ... })` 执行异步任务
+- **Connection**: `ConnectionManager` (LazyLock 单例)，自动检测 Standalone/Cluster/Sentinel
+- **Value Pipeline**: Raw Value → Format Detection (JSON/MsgPack/Text/Binary) → Decompression (LZ4/SNAPPY/GZIP/ZSTD) → Display
 
 ## Code Conventions
 
-- **No `.unwrap()`**: Clippy enforces `unwrap_used = "deny"`. Use `?` operator or proper error handling.
-- **Error Handling**: All fallible operations return `Result<T, Error>`. Errors logged via `tracing::error!` and converted to user-facing `Notification`.
-- **Naming**: `Zedis` prefix for app-specific components. `Event`, `Action`, `State` suffixes for reactive types.
-- **View Rendering**: Implement `Render` trait. Use GPUI element builders (v_flex, h_flex, div). Action listeners via `cx.listener()`.
+- **No `.unwrap()`**: 使用 `?` 或 proper error handling
+- **Error Handling**: `Result<T, Error>` + `tracing::error!` 记录日志，转为 `Notification` 展示给用户
+- **Naming**: `Zedis` 前缀用于 app 组件，`Event`/`Action`/`State` 后缀用于响应式类型
+- **View Rendering**: 实现 `Render` trait，使用 GPUI element builders (v_flex, h_flex, div)，`cx.listener()` 绑定事件
 
 ## Configuration
 

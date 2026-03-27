@@ -187,8 +187,15 @@ fn install_linux(tar_path: &Path) -> Result<()> {
         });
     }
 
-    // Replace binary
-    std::fs::copy(&new_exe, &exe)?;
+    // Rename running binary to .old to avoid ETXTBSY; rollback if copy fails
+    let old_exe = exe.with_extension("old");
+    let _ = std::fs::remove_file(&old_exe);
+    std::fs::rename(&exe, &old_exe)?;
+    if let Err(e) = std::fs::copy(&new_exe, &exe) {
+        let _ = std::fs::rename(&old_exe, &exe);
+        return Err(e.into());
+    }
+    let _ = std::fs::remove_file(&old_exe);
 
     // Clean up
     let _ = std::fs::remove_dir_all(&extract_dir);

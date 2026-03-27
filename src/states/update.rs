@@ -76,11 +76,18 @@ pub enum UpdateStatus {
     Error(String),
 }
 
+impl UpdateStatus {
+    /// Whether the update dialog is already showing a result state.
+    fn is_dialog_visible(&self) -> bool {
+        matches!(self, Self::Error(_) | Self::UpToDate | Self::Available(_))
+    }
+}
+
 // --- Progress message for download channel ---
 
 enum DownloadMsg {
     Progress { downloaded: u64 },
-    Complete,
+    Complete { written: u64 },
     Error(String),
 }
 
@@ -195,7 +202,7 @@ fn download_file(
     url: &str,
     path: &std::path::Path,
     tx: futures::channel::mpsc::UnboundedSender<DownloadMsg>,
-) -> Result<()> {
+) -> Result<u64> {
     use std::io::{Read, Write};
     let client = reqwest::blocking::Client::builder()
         .user_agent("Zedis")
@@ -219,7 +226,7 @@ fn download_file(
             last_report = std::time::Instant::now();
         }
     }
-    Ok(())
+    Ok(downloaded)
 }
 
 /// Check for updates. `manual` = true when triggered by user menu action.
@@ -228,7 +235,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
     let state_entity = store.state();
 
     // Guard: skip if already checking or downloading
-    let dialog_already_open = {
+    {
         let state = state_entity.read(cx);
         if matches!(
             state.status,
@@ -236,11 +243,6 @@ pub fn check_for_updates(manual: bool, cx: &App) {
         ) {
             return;
         }
-        // If status is Error or UpToDate, the dialog is already open (user is retrying)
-        matches!(
-            state.status,
-            UpdateStatus::Error(_) | UpdateStatus::UpToDate | UpdateStatus::Available(_)
-        )
     };
 
     // For auto-checks, skip if checked recently (within 1 hour)
@@ -306,12 +308,15 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                         new = %release.version,
                         "Update available"
                     );
-                    let _ = state_entity.update(cx, |state, cx| {
-                        state.status = UpdateStatus::Available(Box::new(release));
-                        cx.notify();
-                    });
-                    // Open update dialog only if not already open
-                    if !dialog_already_open {
+                    let should_open = state_entity
+                        .update(cx, |state, cx| {
+                            let was_open = state.status.is_dialog_visible();
+                            state.status = UpdateStatus::Available(Box::new(release));
+                            cx.notify();
+                            !was_open
+                        })
+                        .unwrap_or(false);
+                    if should_open {
                         cx.update(|cx| {
                             crate::views::open_update_dialog(cx);
                         })
@@ -319,26 +324,41 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                     }
                 } else {
                     info!("Already up to date ({})", current);
-                    let _ = state_entity.update(cx, |state, cx| {
-                        state.status = UpdateStatus::UpToDate;
-                        cx.notify();
-                    });
-                    if manual && !dialog_already_open {
+                    let should_open = state_entity
+                        .update(cx, |state, cx| {
+                            let was_open = state.status.is_dialog_visible();
+                            state.status = UpdateStatus::UpToDate;
+                            cx.notify();
+                            manual && !was_open
+                        })
+                        .unwrap_or(false);
+                    if should_open {
                         cx.update(|cx| {
                             crate::views::open_update_dialog(cx);
                         })
                         .ok();
                     }
                 }
+                // Save last check time only on success
+                cx.update(|cx| {
+                    super::update_app_state_and_save(cx, "save_last_update_check", |state, _cx| {
+                        state.set_last_update_check(chrono::Utc::now().to_rfc3339());
+                    });
+                })
+                .ok();
             }
             Err(e) => {
                 error!(error = %e, "Failed to check for updates");
                 let msg = e.to_string();
-                let _ = state_entity.update(cx, |state, cx| {
-                    state.status = UpdateStatus::Error(msg);
-                    cx.notify();
-                });
-                if manual && !dialog_already_open {
+                let should_open = state_entity
+                    .update(cx, |state, cx| {
+                        let was_open = state.status.is_dialog_visible();
+                        state.status = UpdateStatus::Error(msg);
+                        cx.notify();
+                        manual && !was_open
+                    })
+                    .unwrap_or(false);
+                if should_open {
                     cx.update(|cx| {
                         crate::views::open_update_dialog(cx);
                     })
@@ -346,14 +366,6 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                 }
             }
         }
-
-        // Save last check time
-        cx.update(|cx| {
-            super::update_app_state_and_save(cx, "save_last_update_check", |state, _cx| {
-                state.set_last_update_check(chrono::Utc::now().to_rfc3339());
-            });
-        })
-        .ok();
     })
     .detach();
 }
@@ -417,8 +429,8 @@ pub fn download_update(cx: &App) {
         std::thread::spawn(move || {
             let result = download_file(&url, &download_path_clone, tx.clone());
             match result {
-                Ok(()) => {
-                    let _ = tx.unbounded_send(DownloadMsg::Complete);
+                Ok(written) => {
+                    let _ = tx.unbounded_send(DownloadMsg::Complete { written });
                 }
                 Err(e) => {
                     let _ = tx.unbounded_send(DownloadMsg::Error(e.to_string()));
@@ -449,8 +461,21 @@ pub fn download_update(cx: &App) {
                         });
                     }
                 }
-                DownloadMsg::Complete => {
+                DownloadMsg::Complete { written } => {
                     info!(path = ?download_path, "Download complete");
+                    if total_size > 0 && written != total_size {
+                        let msg = format!(
+                            "Download size mismatch: expected {} bytes, got {} bytes",
+                            total_size, written
+                        );
+                        error!("{}", msg);
+                        let _ = std::fs::remove_file(&download_path);
+                        let _ = state_entity.update(cx, |state, cx| {
+                            state.status = UpdateStatus::Error(msg);
+                            cx.notify();
+                        });
+                        break;
+                    }
                     // Auto-start install
                     let _ = state_entity.update(cx, |state, cx| {
                         state.status = UpdateStatus::Installing;
@@ -509,6 +534,12 @@ pub fn reset_status(cx: &App) {
     let state_entity = store.state();
     cx.spawn(async move |cx| {
         let _ = state_entity.update(cx, |state, cx| {
+            if matches!(
+                state.status,
+                UpdateStatus::Downloading { .. } | UpdateStatus::Installing
+            ) {
+                return;
+            }
             state.status = UpdateStatus::Idle;
             cx.notify();
         });
