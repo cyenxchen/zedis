@@ -2,7 +2,7 @@
 use crate::connection::get_servers;
 use crate::constants::SIDEBAR_WIDTH;
 use crate::helpers::{MemuAction, is_app_store_build, is_development, new_hot_keys};
-use crate::states::update::{ZedisUpdateState, ZedisUpdateStore, check_for_updates};
+use crate::states::update::{ZedisUpdateState, ZedisUpdateStore, check_for_updates, start_auto_update_scheduler};
 use crate::states::{
     FontSize, FontSizeAction, LocaleAction, NotificationCategory, Route, ServerEvent, SettingsAction, ThemeAction,
     ZedisAppState, ZedisGlobalStore, ZedisServerState, save_app_state, update_app_state_and_save,
@@ -393,18 +393,7 @@ fn main() {
 
         // Auto-check for updates (skip dev and App Store builds)
         if !is_development() && !is_app_store_build() {
-            // Check immediately on startup
-            check_for_updates(false, cx);
-
-            // Then check every 24 hours
-            cx.spawn(async move |cx| {
-                const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-                loop {
-                    cx.background_executor().timer(UPDATE_CHECK_INTERVAL).await;
-                    cx.update(|cx| check_for_updates(false, cx)).ok();
-                }
-            })
-            .detach();
+            start_auto_update_scheduler(cx);
         }
     });
 }

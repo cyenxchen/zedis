@@ -83,6 +83,18 @@ impl UpdateStatus {
     }
 }
 
+// --- Auto-check scheduler outcome ---
+
+#[derive(Debug, Clone)]
+pub enum AutoCheckOutcome {
+    UpToDate,
+    UpdateAvailable,
+    Failed,
+    Skipped,
+    Dismissed,
+    TimerReset,
+}
+
 // --- Progress message for download channel ---
 
 enum DownloadMsg {
@@ -96,6 +108,23 @@ enum DownloadMsg {
 #[derive(Default)]
 pub struct ZedisUpdateState {
     pub status: UpdateStatus,
+    pub(crate) outcome_tx: Option<futures::channel::mpsc::UnboundedSender<AutoCheckOutcome>>,
+}
+
+impl ZedisUpdateState {
+    fn send_outcome(&self, outcome: AutoCheckOutcome) {
+        if let Some(tx) = &self.outcome_tx {
+            let _ = tx.unbounded_send(outcome);
+        }
+    }
+
+    fn send_check_outcome(&self, manual: bool, auto_outcome: AutoCheckOutcome) {
+        self.send_outcome(if manual {
+            AutoCheckOutcome::TimerReset
+        } else {
+            auto_outcome
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -241,6 +270,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
             state.status,
             UpdateStatus::Checking | UpdateStatus::Downloading { .. } | UpdateStatus::Installing
         ) {
+            state.send_check_outcome(manual, AutoCheckOutcome::Skipped);
             return;
         }
     };
@@ -256,6 +286,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
             let elapsed = chrono::Utc::now().signed_duration_since(last);
             if elapsed.num_hours() < 1 {
                 debug!("Skipping auto-check (last check was {}m ago)", elapsed.num_minutes());
+                state_entity.read(cx).send_outcome(AutoCheckOutcome::Skipped);
                 return;
             }
         }
@@ -298,6 +329,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                             debug!(version = %release.tag_name, "Skipping update (user skipped)");
                             let _ = state_entity.update(cx, |state, cx| {
                                 state.status = UpdateStatus::Idle;
+                                state.send_outcome(AutoCheckOutcome::Skipped);
                                 cx.notify();
                             });
                             return;
@@ -312,6 +344,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                         .update(cx, |state, cx| {
                             let was_open = state.status.is_dialog_visible();
                             state.status = UpdateStatus::Available(Box::new(release));
+                            state.send_check_outcome(manual, AutoCheckOutcome::UpdateAvailable);
                             cx.notify();
                             !was_open
                         })
@@ -328,6 +361,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                         .update(cx, |state, cx| {
                             let was_open = state.status.is_dialog_visible();
                             state.status = UpdateStatus::UpToDate;
+                            state.send_check_outcome(manual, AutoCheckOutcome::UpToDate);
                             cx.notify();
                             manual && !was_open
                         })
@@ -354,6 +388,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                     .update(cx, |state, cx| {
                         let was_open = state.status.is_dialog_visible();
                         state.status = UpdateStatus::Error(msg);
+                        state.send_check_outcome(manual, AutoCheckOutcome::Failed);
                         cx.notify();
                         manual && !was_open
                     })
@@ -541,6 +576,7 @@ pub fn reset_status(cx: &App) {
                 return;
             }
             state.status = UpdateStatus::Idle;
+            state.send_outcome(AutoCheckOutcome::Dismissed);
             cx.notify();
         });
     })
@@ -560,6 +596,80 @@ pub fn skip_version(cx: &App) {
     super::update_app_state_and_save(cx, "skip_version", move |app_state, _cx| {
         app_state.set_skipped_version(Some(tag.clone()));
     });
+}
+
+// --- Auto-check scheduler ---
+
+const AUTO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Start the auto-update check scheduler. Checks immediately on start,
+/// then every 12 hours. Retries every 1s on failure. Resets timer on
+/// manual check or dialog dismiss.
+pub fn start_auto_update_scheduler(cx: &App) {
+    let store = cx.global::<ZedisUpdateStore>().clone();
+    let state_entity = store.state();
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+
+    cx.spawn(async move |cx| {
+        use futures::{FutureExt, StreamExt};
+
+        // Install the sender into state
+        let _ = state_entity.update(cx, |state, _cx| {
+            state.outcome_tx = Some(tx);
+        });
+
+        loop {
+            // Drain stale signals from manual checks
+            while rx.try_next().is_ok_and(|v| v.is_some()) {}
+
+            // Trigger auto-check
+            cx.update(|cx| check_for_updates(false, cx)).ok();
+
+            // Wait for outcome
+            let Some(outcome) = rx.next().await else {
+                break;
+            };
+
+            let mut wait_duration = match outcome {
+                AutoCheckOutcome::UpToDate | AutoCheckOutcome::Skipped => AUTO_CHECK_INTERVAL,
+                AutoCheckOutcome::Failed => RETRY_INTERVAL,
+                AutoCheckOutcome::UpdateAvailable => {
+                    // Wait for user to dismiss dialog or manual check to reset
+                    loop {
+                        let Some(next) = rx.next().await else {
+                            return;
+                        };
+                        if matches!(next, AutoCheckOutcome::Dismissed | AutoCheckOutcome::TimerReset) {
+                            break;
+                        }
+                    }
+                    AUTO_CHECK_INTERVAL
+                }
+                AutoCheckOutcome::Dismissed | AutoCheckOutcome::TimerReset => AUTO_CHECK_INTERVAL,
+            };
+
+            // Wait for delay, but also listen for timer reset signals
+            loop {
+                futures::select! {
+                    signal = rx.next() => {
+                        match signal {
+                            Some(AutoCheckOutcome::TimerReset | AutoCheckOutcome::Dismissed) => {
+                                wait_duration = AUTO_CHECK_INTERVAL;
+                                continue; // Restart timer
+                            }
+                            Some(_) => continue,
+                            None => return,
+                        }
+                    }
+                    _ = cx.background_executor().timer(wait_duration).fuse() => {
+                        break; // Timer expired, proceed to next check
+                    }
+                }
+            }
+        }
+    })
+    .detach();
 }
 
 /// Restart the application after update.
