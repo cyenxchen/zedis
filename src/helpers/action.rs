@@ -38,6 +38,11 @@ pub enum ServersAction {
     Filter,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
+pub enum KeyTreeAction {
+    SelectAll,
+}
+
 pub fn humanize_keystroke(keystroke: &str) -> String {
     let parts = keystroke.split('-');
     let mut display_text = String::new();
@@ -125,5 +130,6 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-t", EditorAction::UpdateTtl, None),
         KeyBinding::new("secondary-j", EditorAction::Cmd, None),
         KeyBinding::new("secondary-f", ServersAction::Filter, None),
+        KeyBinding::new("secondary-a", KeyTreeAction::SelectAll, None),
     ]
 }

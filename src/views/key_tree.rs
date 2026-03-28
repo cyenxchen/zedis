@@ -16,7 +16,7 @@ use crate::{
     assets::CustomIconName,
     components::{FormDialog, FormField, SkeletonLoading, open_add_form_dialog},
     connection::QueryMode,
-    helpers::{EditorAction, validate_long_string, validate_ttl},
+    helpers::{EditorAction, KeyTreeAction, validate_long_string, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_key_tree},
 };
 use ahash::{AHashMap, AHashSet};
@@ -1045,6 +1045,22 @@ impl Render for ZedisKeyTree {
             .track_focus(&self.focus_handle)
             .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
+            .on_action(cx.listener(|this, _: &KeyTreeAction, _window, cx| {
+                let keys: Vec<SharedString> = this
+                    .key_tree_list_state
+                    .read(cx)
+                    .delegate()
+                    .items
+                    .iter()
+                    .filter(|item| !item.is_folder)
+                    .map(|item| item.id.clone())
+                    .collect();
+                if !keys.is_empty() {
+                    this.server_state.update(cx, |state, cx| {
+                        state.select_key_range(keys, cx);
+                    });
+                }
+            }))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
                 let new_mode = *e;
 
