@@ -21,7 +21,7 @@ use gpui::{
     App, Bounds, Entity, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, prelude::*, px, size,
 };
 use gpui_component::{
-    ActiveTheme,
+    ActiveTheme, Root,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
@@ -58,7 +58,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "new_version_available"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 h_flex()
@@ -176,7 +177,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "downloading"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 // Progress bar
@@ -216,7 +218,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "installing"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 Label::new(i18n_update(cx, "please_wait"))
@@ -235,7 +238,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "restart_required"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 Label::new(i18n_update(cx, "restart_required_detail"))
@@ -296,7 +300,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "checking"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(
                 Label::new(i18n_update(cx, "please_wait"))
@@ -315,7 +320,8 @@ impl UpdateDialog {
             .child(
                 Label::new(i18n_update(cx, "update_error"))
                     .text_lg()
-                    .font_weight(gpui::FontWeight::SEMIBOLD),
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground),
             )
             .child(Label::new(message.to_string()).text_sm().text_color(cx.theme().danger))
             .child(
@@ -363,6 +369,17 @@ pub fn open_update_dialog(cx: &mut App) {
     let store = cx.global::<ZedisUpdateStore>().clone();
     let state = store.state();
 
+    // If a dialog window already exists and is still open, just activate it
+    if let Some(handle) = state.read(cx).dialog_window {
+        if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+            return;
+        }
+        // Window was closed, clear the stale handle
+        state.update(cx, |state, _cx| {
+            state.dialog_window = None;
+        });
+    }
+
     let width = px(500.);
     let height = px(420.);
     let window_size = size(width, height);
@@ -381,11 +398,16 @@ pub fn open_update_dialog(cx: &mut App) {
         ..Default::default()
     };
 
-    let _ = cx.open_window(options, |window, cx| {
+    if let Ok(window_handle) = cx.open_window(options, |window, cx| {
         window.on_window_should_close(cx, |_window, cx| {
             reset_status(cx);
             true
         });
-        cx.new(|cx| UpdateDialog::new(state, window, cx))
-    });
+        let dialog = cx.new(|cx| UpdateDialog::new(state.clone(), window, cx));
+        cx.new(|cx| Root::new(dialog, window, cx))
+    }) {
+        state.update(cx, |state, _cx| {
+            state.dialog_window = Some(window_handle.into());
+        });
+    }
 }

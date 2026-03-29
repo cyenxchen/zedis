@@ -76,13 +76,6 @@ pub enum UpdateStatus {
     Error(String),
 }
 
-impl UpdateStatus {
-    /// Whether the update dialog is already showing a result state.
-    fn is_dialog_visible(&self) -> bool {
-        matches!(self, Self::Error(_) | Self::UpToDate | Self::Available(_))
-    }
-}
-
 // --- Auto-check scheduler outcome ---
 
 #[derive(Debug, Clone)]
@@ -109,6 +102,7 @@ enum DownloadMsg {
 pub struct ZedisUpdateState {
     pub status: UpdateStatus,
     pub(crate) outcome_tx: Option<futures::channel::mpsc::UnboundedSender<AutoCheckOutcome>>,
+    pub(crate) dialog_window: Option<gpui::AnyWindowHandle>,
 }
 
 impl ZedisUpdateState {
@@ -168,16 +162,20 @@ fn parse_release(gh: GitHubRelease) -> Result<ReleaseInfo> {
     })
 }
 
-fn get_platform_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
-    let target_name = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        "Zedis-aarch64.dmg"
+fn platform_asset_name() -> Option<&'static str> {
+    if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        Some("Zedis-aarch64.dmg")
     } else if cfg!(target_os = "windows") {
-        "zedis-windows.exe.zip"
+        Some("zedis-windows.exe.zip")
     } else if cfg!(target_os = "linux") && cfg!(target_arch = "x86_64") {
-        "zedis-linux-x86_64.tar.gz"
+        Some("zedis-linux-x86_64.tar.gz")
     } else {
-        return None;
-    };
+        None
+    }
+}
+
+fn get_platform_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
+    let target_name = platform_asset_name()?;
     assets.iter().find(|a| a.name == target_name)
 }
 
@@ -258,6 +256,26 @@ fn download_file(
     Ok(downloaded)
 }
 
+fn is_fake_update() -> bool {
+    std::env::var("ZEDIS_FAKE_UPDATE").is_ok_and(|v| v == "1" || v == "true")
+}
+
+fn fake_release() -> ReleaseInfo {
+    let current = semver::Version::parse(CURRENT_VERSION).unwrap_or(semver::Version::new(0, 0, 0));
+    let fake_version = semver::Version::new(current.major, current.minor, current.patch + 1);
+    ReleaseInfo {
+        version: fake_version.clone(),
+        tag_name: format!("v{}", fake_version),
+        body: "- [Demo] This is a fake update for UI testing\n- No actual download or install will happen".to_string(),
+        html_url: String::new(),
+        assets: vec![ReleaseAsset {
+            name: platform_asset_name().unwrap_or("zedis-unknown").to_string(),
+            download_url: String::new(),
+            size: 50 * 1024 * 1024, // 50 MB fake size
+        }],
+    }
+}
+
 /// Check for updates. `manual` = true when triggered by user menu action.
 pub fn check_for_updates(manual: bool, cx: &App) {
     let store = cx.global::<ZedisUpdateStore>().clone();
@@ -298,6 +316,22 @@ pub fn check_for_updates(manual: bool, cx: &App) {
             state.status = UpdateStatus::Checking;
             cx.notify();
         });
+
+        // Fake update mode: skip network, use fake release
+        if is_fake_update() {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            let release = fake_release();
+            info!("[FAKE] Simulating update available: {}", release.version);
+            let _ = state_entity.update(cx, |state, cx| {
+                state.status = UpdateStatus::Available(Box::new(release));
+                state.send_check_outcome(manual, AutoCheckOutcome::UpdateAvailable);
+                cx.notify();
+            });
+            cx.update(crate::views::open_update_dialog).ok();
+            return;
+        }
 
         // Fetch release on background thread (use channel to avoid blocking the executor)
         let (tx, rx) = futures::channel::oneshot::channel();
@@ -340,37 +374,21 @@ pub fn check_for_updates(manual: bool, cx: &App) {
                         new = %release.version,
                         "Update available"
                     );
-                    let should_open = state_entity
-                        .update(cx, |state, cx| {
-                            let was_open = state.status.is_dialog_visible();
-                            state.status = UpdateStatus::Available(Box::new(release));
-                            state.send_check_outcome(manual, AutoCheckOutcome::UpdateAvailable);
-                            cx.notify();
-                            !was_open
-                        })
-                        .unwrap_or(false);
-                    if should_open {
-                        cx.update(|cx| {
-                            crate::views::open_update_dialog(cx);
-                        })
-                        .ok();
-                    }
+                    let _ = state_entity.update(cx, |state, cx| {
+                        state.status = UpdateStatus::Available(Box::new(release));
+                        state.send_check_outcome(manual, AutoCheckOutcome::UpdateAvailable);
+                        cx.notify();
+                    });
+                    cx.update(crate::views::open_update_dialog).ok();
                 } else {
                     info!("Already up to date ({})", current);
-                    let should_open = state_entity
-                        .update(cx, |state, cx| {
-                            let was_open = state.status.is_dialog_visible();
-                            state.status = UpdateStatus::UpToDate;
-                            state.send_check_outcome(manual, AutoCheckOutcome::UpToDate);
-                            cx.notify();
-                            manual && !was_open
-                        })
-                        .unwrap_or(false);
-                    if should_open {
-                        cx.update(|cx| {
-                            crate::views::open_update_dialog(cx);
-                        })
-                        .ok();
+                    let _ = state_entity.update(cx, |state, cx| {
+                        state.status = UpdateStatus::UpToDate;
+                        state.send_check_outcome(manual, AutoCheckOutcome::UpToDate);
+                        cx.notify();
+                    });
+                    if manual {
+                        cx.update(crate::views::open_update_dialog).ok();
                     }
                 }
                 // Save last check time only on success
@@ -384,20 +402,13 @@ pub fn check_for_updates(manual: bool, cx: &App) {
             Err(e) => {
                 error!(error = %e, "Failed to check for updates");
                 let msg = e.to_string();
-                let should_open = state_entity
-                    .update(cx, |state, cx| {
-                        let was_open = state.status.is_dialog_visible();
-                        state.status = UpdateStatus::Error(msg);
-                        state.send_check_outcome(manual, AutoCheckOutcome::Failed);
-                        cx.notify();
-                        manual && !was_open
-                    })
-                    .unwrap_or(false);
-                if should_open {
-                    cx.update(|cx| {
-                        crate::views::open_update_dialog(cx);
-                    })
-                    .ok();
+                let _ = state_entity.update(cx, |state, cx| {
+                    state.status = UpdateStatus::Error(msg);
+                    state.send_check_outcome(manual, AutoCheckOutcome::Failed);
+                    cx.notify();
+                });
+                if manual {
+                    cx.update(crate::views::open_update_dialog).ok();
                 }
             }
         }
@@ -418,6 +429,57 @@ pub fn download_update(cx: &App) {
             _ => return,
         }
     };
+
+    // Fake update mode: simulate download progress and install
+    if is_fake_update() {
+        let total_size = release.assets.first().map(|a| a.size).unwrap_or(50 * 1024 * 1024);
+        cx.spawn(async move |cx| {
+            info!("[FAKE] Simulating download...");
+            let _ = state_entity.update(cx, |state, cx| {
+                state.status = UpdateStatus::Downloading {
+                    downloaded: 0,
+                    total: total_size,
+                };
+                cx.notify();
+            });
+
+            // Simulate download progress over ~2 seconds
+            let steps = 20u64;
+            let chunk = total_size / steps;
+            for i in 1..=steps {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let downloaded = (chunk * i).min(total_size);
+                let _ = state_entity.update(cx, |state, cx| {
+                    state.status = UpdateStatus::Downloading {
+                        downloaded,
+                        total: total_size,
+                    };
+                    cx.notify();
+                });
+            }
+
+            // Simulate installing
+            info!("[FAKE] Simulating install...");
+            let _ = state_entity.update(cx, |state, cx| {
+                state.status = UpdateStatus::Installing;
+                cx.notify();
+            });
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(2))
+                .await;
+
+            // Done
+            info!("[FAKE] Simulating install complete");
+            let _ = state_entity.update(cx, |state, cx| {
+                state.status = UpdateStatus::Installed;
+                cx.notify();
+            });
+        })
+        .detach();
+        return;
+    }
 
     let Some(asset) = get_platform_asset(&release.assets).cloned() else {
         cx.spawn(async move |cx| {
@@ -576,6 +638,7 @@ pub fn reset_status(cx: &App) {
                 return;
             }
             state.status = UpdateStatus::Idle;
+            state.dialog_window = None;
             state.send_outcome(AutoCheckOutcome::Dismissed);
             cx.notify();
         });

@@ -10,6 +10,9 @@ dev:
 debug:
 	RUST_LOG=DEBUG make dev
 
+fake-update:
+	RUST_LOG=DEBUG ZEDIS_FAKE_UPDATE=1 cargo run
+
 release:
 	cargo build --release --features mimalloc
 
