@@ -21,8 +21,8 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, FocusHandle, Hsla, MouseButton, ScrollStrategy, SharedString, Subscription,
-    WeakEntity, Window, div, prelude::*, px,
+    App, AppContext, Corner, Entity, Focusable, FocusHandle, Hsla, MouseButton, ScrollStrategy, SharedString,
+    Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::IndexPath;
 use gpui_component::list::{List, ListDelegate, ListEvent, ListItem, ListState};
@@ -31,7 +31,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, SelectAll},
     label::Label,
     v_flex,
 };
@@ -1045,7 +1045,12 @@ impl Render for ZedisKeyTree {
             .track_focus(&self.focus_handle)
             .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
-            .on_action(cx.listener(|this, _: &KeyTreeAction, _window, cx| {
+            .on_action(cx.listener(|this, _: &KeyTreeAction, window, cx| {
+                let input_focus = this.keyword_state.read(cx).focus_handle(cx);
+                if input_focus.is_focused(window) {
+                    input_focus.dispatch_action(&SelectAll, window, cx);
+                    return;
+                }
                 let keys: Vec<SharedString> = this
                     .key_tree_list_state
                     .read(cx)
