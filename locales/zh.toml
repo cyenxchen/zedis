@@ -108,6 +108,9 @@ ssh_addr_placeholder = "输入 SSH 地址"
 ssh_username_placeholder = "输入 SSH 用户名"
 ssh_password_placeholder = "输入 SSH 密码"
 ssh_key_placeholder = "输入 SSH 密钥"
+duplicate_server_title = "检测到重复服务器"
+duplicate_server_prompt = "已存在同一地址的服务器连接: %{server} (%{host}:%{port})。是否覆盖？"
+override_server = "覆盖"
 
 [editor]
 delete_key_prompt = "您确定要删除此键 (Key): %{key} 吗？"

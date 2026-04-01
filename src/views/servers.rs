@@ -23,6 +23,7 @@ use gpui::{AnyElement, App, Entity, SharedString, Subscription, Window, div, pre
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
+    dialog::DialogButtonProps,
     checkbox::Checkbox,
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
@@ -535,33 +536,89 @@ impl ZedisServers {
                 Some(ssh_key_val)
             };
 
-            server_state_clone.update(cx, |state, cx| {
-                let current_server = state.server(server_id_clone.as_str()).cloned().unwrap_or_default();
+            let (current_server, duplicate) = {
+                let state_ref = server_state_clone.read(cx);
+                let current = state_ref.server(server_id_clone.as_str()).cloned().unwrap_or_default();
+                let dup = if server_id_clone.is_empty() {
+                    state_ref.servers().and_then(|servers| {
+                        servers
+                            .iter()
+                            .find(|s| s.host == host.as_ref() && s.port == port)
+                            .map(|s| (s.id.clone(), s.name.clone()))
+                    })
+                } else {
+                    None
+                };
+                (current, dup)
+            };
 
-                state.update_or_insrt_server(
-                    RedisServer {
-                        id: server_id_clone.clone(),
-                        name: name.to_string(),
-                        host: host.to_string(),
-                        port,
-                        username: username.map(|u| u.to_string()),
-                        password: password.map(|p| p.to_string()),
-                        master_name: master_name.map(|m| m.to_string()),
-                        description: description.map(|d| d.to_string()),
-                        tls: if enable_tls { Some(enable_tls) } else { None },
-                        insecure: insecure_tls,
-                        client_cert: client_cert.map(|c| c.to_string()),
-                        client_key: client_key.map(|k| k.to_string()),
-                        root_cert: root_cert.map(|r| r.to_string()),
-                        ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
-                        ssh_addr: ssh_addr.map(|a| a.to_string()),
-                        ssh_username: ssh_username.map(|u| u.to_string()),
-                        ssh_password: ssh_password.map(|p| p.to_string()),
-                        ssh_key: ssh_key.map(|k| k.to_string()),
-                        ..current_server
-                    },
-                    cx,
-                );
+            let new_server = RedisServer {
+                id: server_id_clone.clone(),
+                name: name.to_string(),
+                host: host.to_string(),
+                port,
+                username: username.map(|u| u.to_string()),
+                password: password.map(|p| p.to_string()),
+                master_name: master_name.map(|m| m.to_string()),
+                description: description.map(|d| d.to_string()),
+                tls: if enable_tls { Some(enable_tls) } else { None },
+                insecure: insecure_tls,
+                client_cert: client_cert.map(|c| c.to_string()),
+                client_key: client_key.map(|k| k.to_string()),
+                root_cert: root_cert.map(|r| r.to_string()),
+                ssh_tunnel: if ssh_tunnel { Some(ssh_tunnel) } else { None },
+                ssh_addr: ssh_addr.map(|a| a.to_string()),
+                ssh_username: ssh_username.map(|u| u.to_string()),
+                ssh_password: ssh_password.map(|p| p.to_string()),
+                ssh_key: ssh_key.map(|k| k.to_string()),
+                ..current_server
+            };
+
+            if let Some((existing_id, existing_name)) = duplicate {
+                window.close_dialog(cx);
+
+                let mut override_server = new_server;
+                override_server.id = existing_id;
+                let server_state_for_confirm = server_state_clone.clone();
+
+                window.open_dialog(cx, move |dialog, _, cx| {
+                    let locale = cx.global::<ZedisGlobalStore>().read(cx).locale().to_string();
+                    let message = t!(
+                        "servers.duplicate_server_prompt",
+                        server = existing_name,
+                        host = override_server.host,
+                        port = override_server.port,
+                        locale = locale
+                    )
+                    .to_string();
+
+                    dialog
+                        .confirm()
+                        .close_button(true)
+                        .button_props(
+                            DialogButtonProps::default()
+                                .ok_text(i18n_servers(cx, "override_server"))
+                                .cancel_text(i18n_common(cx, "cancel")),
+                        )
+                        .title(i18n_servers(cx, "duplicate_server_title"))
+                        .child(message)
+                        .on_ok({
+                            let server_state = server_state_for_confirm.clone();
+                            let server = override_server.clone();
+                            move |_, _, cx| {
+                                server_state.update(cx, |state, cx| {
+                                    state.update_or_insrt_server(server.clone(), cx);
+                                });
+                                true
+                            }
+                        })
+                });
+
+                return false;
+            }
+
+            server_state_clone.update(cx, |state, cx| {
+                state.update_or_insrt_server(new_server, cx);
             });
 
             window.close_dialog(cx);

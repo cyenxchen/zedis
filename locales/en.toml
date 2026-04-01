@@ -109,6 +109,9 @@ ssh_addr_placeholder = "Enter ssh address"
 ssh_username_placeholder = "Enter ssh username"
 ssh_password_placeholder = "Enter ssh password"
 ssh_key_placeholder = "Enter ssh key"
+duplicate_server_title = "Duplicate Server Detected"
+duplicate_server_prompt = "A server with the same address already exists: %{server} (%{host}:%{port}). Override?"
+override_server = "Override"
 
 [editor]
 delete_key_prompt = "Are you sure you want to delete this key: %{key}?"
