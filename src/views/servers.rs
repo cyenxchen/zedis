@@ -539,16 +539,12 @@ impl ZedisServers {
             let (current_server, duplicate) = {
                 let state_ref = server_state_clone.read(cx);
                 let current = state_ref.server(server_id_clone.as_str()).cloned().unwrap_or_default();
-                let dup = if server_id_clone.is_empty() {
-                    state_ref.servers().and_then(|servers| {
-                        servers
-                            .iter()
-                            .find(|s| s.host == host.as_ref() && s.port == port)
-                            .map(|s| (s.id.clone(), s.name.clone()))
-                    })
-                } else {
-                    None
-                };
+                let dup = state_ref.servers().and_then(|servers| {
+                    servers
+                        .iter()
+                        .find(|s| s.host == host.as_ref() && s.port == port && s.id != server_id_clone)
+                        .map(|s| (s.id.clone(), s.name.clone()))
+                });
                 (current, dup)
             };
 
@@ -802,12 +798,15 @@ impl ZedisServers {
             .unwrap_or_default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_server_actions(
         &self,
         index: usize,
         update_server: RedisServer,
+        duplicate_server: RedisServer,
         remove_server_id: String,
         update_tooltip: SharedString,
+        duplicate_tooltip: SharedString,
         remove_tooltip: SharedString,
         cx: &mut Context<Self>,
     ) -> Vec<Button> {
@@ -820,6 +819,14 @@ impl ZedisServers {
                     cx.stop_propagation();
                     this.fill_inputs(window, cx, &update_server);
                     this.add_or_update_server(window, cx);
+                })),
+            Button::new(("servers-card-action-duplicate", index))
+                .ghost()
+                .tooltip(duplicate_tooltip)
+                .icon(IconName::Copy)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.duplicate_server(window, cx, &duplicate_server);
                 })),
             Button::new(("servers-card-action-delete", index))
                 .ghost()
@@ -843,10 +850,16 @@ impl ZedisServers {
         let select_server_id = server.id.clone();
         let update_server = server.clone();
         let duplicate_server = server.clone();
+        let context_menu_update_server = server.clone();
+        let context_menu_duplicate_server = server.clone();
         let remove_server_id = server.id.clone();
-        let duplicate_server_label = i18n_servers(cx, "duplicate_server");
+        let context_menu_remove_server_id = server.id.clone();
+        let duplicate_server_label = i18n_common(cx, "duplicate");
         let update_tooltip = i18n_servers(cx, "update_tooltip");
+        let duplicate_tooltip = duplicate_server_label.clone();
         let remove_tooltip = i18n_servers(cx, "remove_tooltip");
+        let context_menu_update_label = i18n_common(cx, "edit");
+        let context_menu_remove_label = i18n_common(cx, "delete");
         let description = server.description.as_deref().unwrap_or_default().to_string();
         let updated_at = Self::server_updated_at(server);
         let title = Self::server_title(server);
@@ -859,8 +872,10 @@ impl ZedisServers {
         let actions = self.render_server_actions(
             index,
             update_server,
+            duplicate_server,
             remove_server_id,
             update_tooltip,
+            duplicate_tooltip,
             remove_tooltip,
             cx,
         );
@@ -970,10 +985,30 @@ impl ZedisServers {
                 move |menu, _window, _cx| {
                     menu.item(PopupMenuItem::new(duplicate_server_label.clone()).on_click({
                         let view = view.clone();
-                        let duplicate_server = duplicate_server.clone();
+                        let duplicate_server = context_menu_duplicate_server.clone();
                         move |_, window, cx| {
                             view.update(cx, |this, cx| {
                                 this.duplicate_server(window, cx, &duplicate_server);
+                            });
+                        }
+                    }))
+                    .item(PopupMenuItem::new(context_menu_update_label.clone()).on_click({
+                        let view = view.clone();
+                        let update_server = context_menu_update_server.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.fill_inputs(window, cx, &update_server);
+                                this.add_or_update_server(window, cx);
+                            });
+                        }
+                    }))
+                    .separator()
+                    .item(PopupMenuItem::new(context_menu_remove_label.clone()).on_click({
+                        let view = view.clone();
+                        let remove_server_id = context_menu_remove_server_id.clone();
+                        move |_, window, cx| {
+                            view.update(cx, |this, cx| {
+                                this.remove_server(window, cx, &remove_server_id);
                             });
                         }
                     }))
