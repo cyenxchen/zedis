@@ -730,9 +730,13 @@ impl ZedisServers {
                         .child(field().label(master_name_label).child(Input::new(&master_name_state)))
                         .child(field().label(description_label).child(Input::new(&description_state)));
 
+                    let viewport_height = window.viewport_size().height;
+                    // Dialog top margin is viewport_height/10, plus ~180px for title/padding/footer/animation
+                    let max_form_height =
+                        (viewport_height - viewport_height / 10. - px(180.0)).max(px(200.0));
                     div()
                         .id("servers-scrollable-container")
-                        .max_h(px(600.0))
+                        .max_h(max_form_height)
                         .child(form)
                         .overflow_y_scrollbar()
                 })
