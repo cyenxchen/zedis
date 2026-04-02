@@ -151,55 +151,10 @@ jobs:
         shell: bash
         run: |
           ./.github/workflows/upload_asset.sh ./zedis-windows.exe.zip $GITHUB_TOKEN
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: setup node
-        uses: actions/setup-node@v6
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev libssl-dev
-      - name: install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          target: x86_64-unknown-linux-gnu
-      - name: rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: linux-build
-      - name: install appimagetool
-        run: |
-          wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
-          
-          chmod +x appimagetool
-          sudo mv appimagetool /usr/local/bin/
-      - name: release
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: 1
-        run: |
-          cargo install cargo-appimage
-          cargo build --release --features mimalloc
-          ls -lh target/release
-          mv target/release/zedis ./zedis
-          chmod +x zedis
-          tar -czvf zedis-linux-x86_64.tar.gz zedis
-          cargo appimage --features mimalloc
-          mv target/appimage/zedis.AppImage ./zedis-x86_64.AppImage
-          chmod +x zedis-x86_64.AppImage
-          tar -czvf zedis-x86_64.AppImage.tar.gz zedis-x86_64.AppImage
-      - name: upload asset
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          ./.github/workflows/upload_asset.sh ./zedis-linux-x86_64.tar.gz $GITHUB_TOKEN
-          ./.github/workflows/upload_asset.sh ./zedis-x86_64.AppImage.tar.gz $GITHUB_TOKEN
-
   publish-release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: [macos, windows, linux]
+    needs: [macos, windows]
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v6
