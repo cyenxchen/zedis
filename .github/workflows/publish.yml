@@ -211,5 +211,5 @@ jobs:
           gh release list --limit 100 --json tagName \
             --jq '.[2:][].tagName' | while read -r tag; do
             echo "Deleting release $tag..."
-            gh release delete "$tag" --yes --cleanup-tag
+            gh release delete "$tag" --yes --cleanup-tag || true
           done
