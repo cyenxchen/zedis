@@ -190,7 +190,7 @@ fn fetch_latest_release() -> Result<ReleaseInfo> {
         .user_agent("Zedis")
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
-    let resp: GitHubRelease = client.get(GITHUB_API_URL).send()?.json()?;
+    let resp: GitHubRelease = client.get(GITHUB_API_URL).send()?.error_for_status()?.json()?;
     let mut release = parse_release(resp)?;
 
     // If body is empty, fetch commit messages between current and new version
@@ -206,7 +206,7 @@ fn fetch_latest_release() -> Result<ReleaseInfo> {
 fn fetch_compare_notes(client: &reqwest::blocking::Client, new_tag: &str) -> Result<String> {
     let current_tag = format!("v{}", CURRENT_VERSION);
     let url = format!("{}/{}...{}", GITHUB_COMPARE_URL, current_tag, new_tag);
-    let resp: serde_json::Value = client.get(&url).send()?.json()?;
+    let resp: serde_json::Value = client.get(&url).send()?.error_for_status()?.json()?;
     let commits = resp["commits"].as_array().ok_or_else(|| Error::Update {
         message: "No commits in compare response".to_string(),
     })?;
@@ -235,7 +235,7 @@ fn download_file(
         .user_agent("Zedis")
         .timeout(std::time::Duration::from_secs(600))
         .build()?;
-    let mut resp = client.get(url).send()?;
+    let mut resp = client.get(url).send()?.error_for_status()?;
     let mut file = std::fs::File::create(path)?;
     let mut downloaded = 0u64;
     let mut buf = vec![0u8; 65536];
@@ -664,10 +664,10 @@ pub fn skip_version(cx: &App) {
 // --- Auto-check scheduler ---
 
 const AUTO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
-const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// Start the auto-update check scheduler. Checks immediately on start,
-/// then every 12 hours. Retries every 1s on failure. Resets timer on
+/// then every 12 hours. Retries every 5 minutes on failure. Resets timer on
 /// manual check or dialog dismiss.
 pub fn start_auto_update_scheduler(cx: &App) {
     let store = cx.global::<ZedisUpdateStore>().clone();
