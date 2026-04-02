@@ -9219,7 +9219,7 @@ dependencies = [
 
 [[package]]
 name = "zedis"
-version = "0.0.37"
+version = "0.2.9"
 dependencies = [
  "aes-gcm",
  "ahash",
