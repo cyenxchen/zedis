@@ -919,14 +919,14 @@ impl ZedisSidebar {
                 )
                 .separator()
                 .menu_element_with_icon(
-                    Icon::new(IconName::Globe),
-                    Box::new(MemuAction::CheckForUpdates),
-                    move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")).p(LABEL_PADDING),
-                )
-                .menu_element_with_icon(
                     Icon::new(IconName::Settings2),
                     Box::new(SettingsAction::Editor),
                     move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")).p(LABEL_PADDING),
+                )
+                .menu_element_with_icon(
+                    Icon::new(IconName::Globe),
+                    Box::new(MemuAction::CheckForUpdates),
+                    move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")).p(LABEL_PADDING),
                 )
             });
         div().border_t_1().border_color(cx.theme().border).child(btn)

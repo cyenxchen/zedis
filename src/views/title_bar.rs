@@ -84,14 +84,14 @@ impl ZedisTitleBar {
             )
             .separator()
             .menu_element_with_icon(
-                Icon::new(IconName::Globe),
-                Box::new(MemuAction::CheckForUpdates),
-                move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")),
-            )
-            .menu_element_with_icon(
                 Icon::new(IconName::Settings2),
                 Box::new(SettingsAction::Editor),
                 move |_window, cx| Label::new(i18n_sidebar(cx, "other_settings")),
+            )
+            .menu_element_with_icon(
+                Icon::new(IconName::Globe),
+                Box::new(MemuAction::CheckForUpdates),
+                move |_window, cx| Label::new(i18n_update(cx, "check_for_updates")),
             )
     }
 }
