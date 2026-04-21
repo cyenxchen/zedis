@@ -75,6 +75,9 @@ uuid = "1.19.0"
 [build-dependencies]
 winres = "0.1.12"
 
+[patch.crates-io]
+gpui-component = { path = "vendor/gpui-component" }
+
 
 [lints.clippy]
 # Set the unwrap_used lint level to deny
