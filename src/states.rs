@@ -19,6 +19,7 @@ mod server;
 pub mod update;
 
 pub use app::*;
+pub use i18n::i18n_about;
 pub use i18n::i18n_common;
 pub use i18n::i18n_editor;
 pub use i18n::i18n_hash_editor;

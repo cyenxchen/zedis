@@ -16,9 +16,10 @@ use crate::{
     constants::GITHUB_REPOSITORY_URL,
     helpers::MemuAction,
     states::{
-        FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
-        i18n_update,
+        FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore,
+        i18n_sidebar, i18n_update,
     },
+    views::open_about_window,
 };
 use gpui::{App, Context, Corner, Window, prelude::*};
 use gpui_component::{
@@ -122,6 +123,14 @@ impl Render for ZedisTitleBar {
                             .small()
                             .ghost()
                             .on_click(|_, _, cx| cx.open_url(GITHUB_REPOSITORY_URL)),
+                    )
+                    .child(
+                        Button::new("about")
+                            .tooltip(i18n_sidebar(cx, "about"))
+                            .icon(IconName::Info)
+                            .small()
+                            .ghost()
+                            .on_click(|_, _, cx| open_about_window(cx)),
                     ),
             )
     }
