@@ -37,7 +37,6 @@ use gpui_component::{
     list::ListItem,
     menu::{ContextMenuExt, DropdownMenu, PopupMenuItem},
     scroll::ScrollableElement,
-    tooltip::Tooltip,
     v_flex,
 };
 use std::{cell::Cell, rc::Rc};
@@ -650,14 +649,12 @@ impl ZedisSidebar {
                     let view = view.clone();
                     let view_for_capture = view_for_capture.clone();
                     let view_for_menu = view_for_menu.clone();
-                    let tooltip_name = name.clone();
                     let close_label = close_label.clone();
                     let right_click_server_id = server_id.clone();
                     let right_clicked_server_id = right_clicked_server_id.clone();
 
                     div()
                         .id(("sidebar-server-tooltip", index))
-                        .tooltip(move |window, cx| Tooltip::new(tooltip_name.clone()).build(window, cx))
                         .capture_any_mouse_down(move |event, _, cx| {
                             if event.button == MouseButton::Right {
                                 view_for_capture.update(cx, |this, cx| {
