@@ -17,7 +17,7 @@ use crate::{
     components::{INDEX_COLUMN_NAME, ZedisKvDelegate, ZedisKvFetcher},
     states::{ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_kv_table},
 };
-use gpui::{Entity, SharedString, Subscription, TextAlign, Window, div, prelude::*, px};
+use gpui::{Entity, SharedString, Subscription, TextAlign, Window, canvas, div, prelude::*, px};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, PixelsExt,
     button::{Button, ButtonVariants},
@@ -27,10 +27,16 @@ use gpui_component::{
     table::{Table, TableState},
     v_flex,
 };
-use tracing::info;
+use tracing::{debug, info};
 
 /// Width of the keyword search input field in pixels
 const KEYWORD_INPUT_WIDTH: f32 = 200.0;
+const TABLE_WIDTH_PADDING: f32 = 10.0;
+const FLEX_COLUMN_GAP: f32 = 5.0;
+const MIN_FLEX_COLUMN_WIDTH: f32 = 100.0;
+const ACTION_COLUMN_WIDTH: f32 = 76.0;
+const INDEX_COLUMN_WIDTH: f32 = 56.0;
+const WIDTH_REFRESH_EPSILON: f32 = 1.0;
 
 /// Defines the type of table column for different purposes.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -75,6 +81,8 @@ impl KvTableColumn {
 /// - Real-time updates via server events
 /// - Loading states and pagination indicators
 pub struct ZedisKvTable<T: ZedisKvFetcher> {
+    /// Value columns provided by the concrete Redis value editor.
+    columns: Vec<KvTableColumn>,
     /// Table state managing the delegate and data
     table_state: Entity<TableState<ZedisKvDelegate<T>>>,
     /// Input field state for keyword search/filter
@@ -87,6 +95,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     done: bool,
     /// Whether a filter operation is in progress
     loading: bool,
+    /// Last content width used to calculate table column widths.
+    content_width: f32,
     /// Flag indicating the selected key has changed (triggers input reset)
     key_changed: bool,
     /// Event subscriptions for server state and input changes
@@ -99,43 +109,37 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         T::new(server_state, value)
     }
 
-    /// Prepares table columns by adding index and action columns, then calculating widths.
+    /// Prepares table columns by adding action and index columns, then calculating widths.
     ///
     /// # Logic:
-    /// 1. Adds an index column at the start (80px, right-aligned)
-    /// 2. Adds an action column at the end (100px, center-aligned)
+    /// 1. Adds fixed action and index columns at the start
+    /// 2. Keeps value columns in the horizontally scrollable area
     /// 3. Calculates remaining space for columns without fixed widths
     /// 4. Distributes remaining width evenly among flexible columns
-    fn new_columns(mut columns: Vec<KvTableColumn>, window: &Window, cx: &mut Context<Self>) -> Vec<KvTableColumn> {
-        // Calculate available width (window - sidebar - key tree - padding)
-        let window_width = window.viewport_size().width;
-
-        // Insert index column at the beginning
+    fn new_columns(mut columns: Vec<KvTableColumn>, content_width: f32, cx: &mut Context<Self>) -> Vec<KvTableColumn> {
+        // Fixed columns must stay as the leftmost prefix for gpui-component's table renderer.
         columns.insert(
             0,
             KvTableColumn {
-                column_type: KvTableColumnType::Index,
-                name: INDEX_COLUMN_NAME.to_string().into(),
-                width: Some(80.),
-                align: Some(TextAlign::Right),
+                column_type: KvTableColumnType::Action,
+                name: i18n_common(cx, "action"),
+                width: Some(ACTION_COLUMN_WIDTH),
+                align: Some(TextAlign::Center),
             },
         );
 
-        // Append action column at the end
-        columns.push(KvTableColumn {
-            column_type: KvTableColumnType::Action,
-            name: i18n_common(cx, "action"),
-            width: Some(100.0),
-            align: Some(TextAlign::Center),
-        });
+        columns.insert(
+            1,
+            KvTableColumn {
+                column_type: KvTableColumnType::Index,
+                name: INDEX_COLUMN_NAME.to_string().into(),
+                width: Some(INDEX_COLUMN_WIDTH),
+                align: Some(TextAlign::Center),
+            },
+        );
 
         // Calculate remaining width and count columns without fixed width
-        let content_width = cx
-            .global::<ZedisGlobalStore>()
-            .read(cx)
-            .content_width()
-            .unwrap_or(window_width);
-        let mut remaining_width = content_width.as_f32() - 10.;
+        let mut remaining_width = content_width - TABLE_WIDTH_PADDING;
         let mut flexible_columns = 0;
 
         for column in &columns {
@@ -148,7 +152,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
         // Distribute remaining width among flexible columns
         let flexible_width = if flexible_columns > 0 {
-            Some((remaining_width / flexible_columns as f32) - 5.)
+            Some(((remaining_width / flexible_columns as f32) - FLEX_COLUMN_GAP).max(MIN_FLEX_COLUMN_WIDTH))
         } else {
             None
         };
@@ -159,8 +163,42 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             }
         }
 
+        debug!(
+            columns = columns.len(),
+            content_width, "Configured key value table columns"
+        );
+
         columns
     }
+
+    fn initial_content_width(window: &Window, cx: &mut Context<Self>) -> f32 {
+        cx.global::<ZedisGlobalStore>()
+            .read(cx)
+            .content_width()
+            .map(|width| width.as_f32())
+            .unwrap_or_else(|| window.viewport_size().width.as_f32())
+    }
+
+    fn refresh_columns_for_width(&mut self, content_width: f32, cx: &mut Context<Self>) {
+        if content_width <= 0.0 || (self.content_width - content_width).abs() < WIDTH_REFRESH_EPSILON {
+            return;
+        }
+
+        let columns = Self::new_columns(self.columns.clone(), content_width, cx);
+        let changed = self.table_state.update(cx, |state, cx| {
+            let changed = state.delegate_mut().update_column_layout(columns);
+            if changed {
+                state.refresh(cx);
+            }
+            changed
+        });
+        debug!(
+            old_content_width = self.content_width,
+            content_width, changed, "Checked key value table columns after table width changed"
+        );
+        self.content_width = content_width;
+    }
+
     /// Creates a new table view with the given columns and server state.
     ///
     /// Sets up:
@@ -219,18 +257,26 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
         let done = fetcher.is_done();
         let items_count = fetcher.rows_count();
         let total_count = fetcher.count();
-        let delegate = ZedisKvDelegate::new(Self::new_columns(columns, window, cx), fetcher, window, cx);
+        let content_width = Self::initial_content_width(window, cx);
+        let delegate = ZedisKvDelegate::new(
+            Self::new_columns(columns.clone(), content_width, cx),
+            fetcher,
+            window,
+            cx,
+        );
         let table_state = cx.new(|cx| TableState::new(delegate, window, cx));
 
         info!("Creating new key value table view");
 
         Self {
+            columns,
             table_state,
             keyword_state,
             items_count,
             total_count,
             done,
             loading: false,
+            content_width,
             key_changed: false,
             _subscriptions: subscriptions,
         }
@@ -288,18 +334,35 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         } else {
             Icon::new(CustomIconName::CircleDotDashed) // More data available
         };
+        let view = cx.entity().clone();
 
         v_flex()
             .h_full()
             .w_full()
             // Main table area
             .child(
-                div().size_full().flex_1().child(
-                    Table::new(&self.table_state)
-                        .stripe(true) // Alternating row colors for better readability
-                        .bordered(true) // Table borders
-                        .scrollbar_visible(true, true), // Show both scrollbars
-                ),
+                div()
+                    .size_full()
+                    .flex_1()
+                    .relative()
+                    .child(
+                        Table::new(&self.table_state)
+                            .stripe(true) // Alternating row colors for better readability
+                            .bordered(true) // Table borders
+                            .scrollbar_visible(true, true), // Show both scrollbars
+                    )
+                    .child(
+                        canvas(
+                            move |bounds, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.refresh_columns_for_width(bounds.size.width.as_f32(), cx);
+                                });
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
             )
             // Footer toolbar with search and status
             .child(

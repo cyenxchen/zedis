@@ -49,17 +49,11 @@ impl ZedisKvFetcher for ZedisHashValues {
         Self { server_state, value }
     }
 
-    /// Retrieves a cell value for the table at the given row and column.
-    ///
-    /// Column layout:
-    /// - Column 1: Field name
-    /// - Column 2: Field value
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         let hash = self.value.hash_value()?;
         let (field, value) = hash.values.get(row_ix)?;
 
-        // Column 2 is the value, others show the field name
-        if col_ix == 2 {
+        if col_ix == 1 {
             Some(value.clone())
         } else {
             Some(field.clone())
@@ -76,11 +70,8 @@ impl ZedisKvFetcher for ZedisHashValues {
         true
     }
 
-    /// Specifies which columns are read-only in the table.
-    ///
-    /// Column 1 (field name) is read-only; only the value can be edited inline.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![1]
+    fn is_readonly_column(&self, col_ix: usize) -> bool {
+        col_ix == 0
     }
 
     /// Returns the number of currently loaded rows (not total HASH size).

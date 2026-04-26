@@ -26,6 +26,7 @@ use gpui_component::{
 };
 use rust_i18n::t;
 use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
+use tracing::warn;
 
 pub const INDEX_COLUMN_NAME: &str = "#";
 
@@ -51,9 +52,9 @@ pub trait ZedisKvFetcher: 'static {
         false
     }
 
-    /// Returns the column indices that are readonly.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![]
+    /// Returns whether a value column is read-only.
+    fn is_readonly_column(&self, _col_ix: usize) -> bool {
+        false
     }
 
     /// Returns true if the fetcher is finished loading data.
@@ -127,6 +128,10 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
                 // Build column with standard padding
                 Column::new(item.name.clone(), item.name.clone())
                     .when_some(item.width, |col, width| col.width(width))
+                    .when(
+                        matches!(item.column_type, KvTableColumnType::Index | KvTableColumnType::Action),
+                        |col| col.fixed_left().movable(false),
+                    )
                     .map(|mut col| {
                         if let Some(align) = item.align {
                             col.align = align;
@@ -165,6 +170,52 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         self.processing = Rc::new(Cell::new(false));
     }
 
+    /// Updates table column layout after the editor content area changes size.
+    pub fn update_column_layout(&mut self, columns: Vec<KvTableColumn>) -> bool {
+        if columns.len() != self.columns.len() {
+            warn!(
+                old_columns = self.columns.len(),
+                new_columns = columns.len(),
+                "Skip key value table column update because column count changed"
+            );
+            return false;
+        }
+
+        let mut changed = false;
+        for (index, column) in columns.iter().enumerate() {
+            if let Some(width) = column.width {
+                let width = px(width);
+                if self.columns[index].width != width {
+                    self.columns[index].width = width;
+                    changed = true;
+                }
+            }
+            if let Some(align) = column.align
+                && self.columns[index].align != align
+            {
+                self.columns[index].align = align;
+                changed = true;
+            }
+        }
+        if changed {
+            self.table_columns = columns;
+        }
+        changed
+    }
+
+    fn value_column_index(&self, col_ix: usize) -> Option<usize> {
+        if self.table_columns.get(col_ix)?.column_type != KvTableColumnType::Value {
+            return None;
+        }
+
+        Some(
+            self.table_columns[..col_ix]
+                .iter()
+                .filter(|column| column.column_type == KvTableColumnType::Value)
+                .count(),
+        )
+    }
+
     /// Exits edit mode and resets related state flags.
     fn reset_edit(&mut self) {
         self.edit_focus_done = false;
@@ -182,7 +233,11 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         // Populate input fields with current values from fetcher
         let fetcher = self.fetcher();
         for (col_ix, state) in &self.value_states {
-            if let Some(value) = fetcher.get(row_ix, *col_ix) {
+            let Some(value_col_ix) = self.value_column_index(*col_ix) else {
+                continue;
+            };
+
+            if let Some(value) = fetcher.get(row_ix, value_col_ix) {
                 state.update(cx, |input, cx| input.set_value(value, window, cx));
             }
         }
@@ -228,7 +283,7 @@ impl<T: ZedisKvFetcher> ZedisKvDelegate<T> {
         cx: &mut Context<TableState<Self>>,
     ) -> gpui::Div {
         let processing = self.processing.clone();
-        let mut base = base;
+        let mut base = base.justify_center();
 
         // Edit/Save button (only shown if fetcher supports updates)
         if self.fetcher.can_update() {
@@ -340,6 +395,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .when_some(column.paddings, |this, paddings| this.paddings(paddings))
             .child(
                 Label::new(column.name.clone())
+                    .w_full()
                     .text_align(column.align)
                     .text_color(cx.theme().primary)
                     .text_sm(),
@@ -362,7 +418,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             .size_full()
             .when_some(column.paddings, |this, paddings| this.paddings(paddings));
 
-        let is_editing = self.editing_row.get() == Some(row_ix) && !self.fetcher.readonly_columns().contains(&col_ix);
+        let is_row_editing = self.editing_row.get() == Some(row_ix);
 
         // Handle special column types
         if let Some(table_column) = self.table_columns.get(col_ix) {
@@ -373,11 +429,16 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
                 }
                 // Action column: Display edit/delete/cancel buttons
                 KvTableColumnType::Action => {
-                    return self.render_action_buttons(base, row_ix, is_editing, window, cx);
+                    return self.render_action_buttons(base, row_ix, is_row_editing, window, cx);
                 }
                 _ => {}
             }
         }
+
+        let Some(value_col_ix) = self.value_column_index(col_ix) else {
+            return base.child(Label::new("--").text_align(column.align));
+        };
+        let is_editing = is_row_editing && !self.fetcher.is_readonly_column(value_col_ix);
 
         // Render editable input or static label for value columns
         if is_editing && let Some(value_state) = self.value_states.get(&col_ix) {
@@ -390,7 +451,7 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         }
 
         // Default: Render value as label
-        let value = self.fetcher.get(row_ix, col_ix).unwrap_or_else(|| "--".into());
+        let value = self.fetcher.get(row_ix, value_col_ix).unwrap_or_else(|| "--".into());
         base.child(Label::new(value).text_align(column.align))
     }
     /// Returns whether all data has been loaded (end of file).

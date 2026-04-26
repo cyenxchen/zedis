@@ -44,17 +44,11 @@ struct ZedisZsetValues {
 }
 
 impl ZedisKvFetcher for ZedisZsetValues {
-    /// Retrieves a cell value for the table at the given row and column.
-    ///
-    /// Column layout:
-    /// - Column 1: Member name
-    /// - Column 2: Score (as formatted string)
     fn get(&self, row_ix: usize, col_ix: usize) -> Option<SharedString> {
         let zset = self.value.zset_value()?;
         let (member, score) = zset.values.get(row_ix)?;
 
-        // Column 2 is the score, others show the member name
-        if col_ix == 2 {
+        if col_ix == 1 {
             Some(score.to_string().into())
         } else {
             Some(member.clone())
@@ -73,11 +67,8 @@ impl ZedisKvFetcher for ZedisZsetValues {
         self.value.zset_value().map_or(0, |v| v.values.len())
     }
 
-    /// Specifies which columns are read-only in the table.
-    ///
-    /// Column 1 (member name) is read-only; only the score can be edited inline.
-    fn readonly_columns(&self) -> Vec<usize> {
-        vec![1]
+    fn is_readonly_column(&self, col_ix: usize) -> bool {
+        col_ix == 0
     }
 
     /// Indicates whether the table supports inline editing.
