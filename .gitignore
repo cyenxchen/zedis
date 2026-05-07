@@ -31,3 +31,5 @@ cargo-sources.json
 
 # Claude Code
 .claude/
+.DS_Store
+.idea/
