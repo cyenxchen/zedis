@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{assets::CustomIconName, states::i18n_about};
+use crate::{assets::CustomIconName, helpers::MemuAction, states::i18n_about};
 use chrono::{Datelike, Local};
-use gpui::{App, Bounds, TextAlign, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, prelude::*, px, size};
+use gpui::{
+    App, Bounds, TextAlign, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, prelude::*, px, size,
+};
 use gpui_component::{ActiveTheme, Icon, Root, h_flex, label::Label, v_flex};
 use tracing::info;
 
@@ -75,6 +77,14 @@ impl Render for About {
                         ),
                     ),
             )
+            .on_action(cx.listener(|_this, e: &MemuAction, window, cx| {
+                if *e == MemuAction::Minimize {
+                    info!("minimize about window requested");
+                    window.minimize_window();
+                } else {
+                    cx.propagate();
+                }
+            }))
     }
 }
 

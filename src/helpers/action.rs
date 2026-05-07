@@ -22,6 +22,7 @@ pub enum MemuAction {
     Quit,
     About,
     CheckForUpdates,
+    Minimize,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
@@ -124,6 +125,7 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
 pub fn new_hot_keys() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("secondary-q", MemuAction::Quit, None),
+        KeyBinding::new("secondary-m", MemuAction::Minimize, None),
         KeyBinding::new("secondary-s", EditorAction::Save, None),
         KeyBinding::new("secondary-r", EditorAction::Reload, None),
         KeyBinding::new("secondary-n", EditorAction::Create, None),

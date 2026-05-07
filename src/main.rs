@@ -235,10 +235,15 @@ impl Render for Zedis {
                     });
                 }
             }))
-            .on_action(cx.listener(|_this, e: &MemuAction, _window, cx| {
-                if *e == MemuAction::CheckForUpdates {
+            .on_action(cx.listener(|_this, e: &MemuAction, window, cx| match e {
+                MemuAction::CheckForUpdates => {
                     check_for_updates(true, cx);
-                } else {
+                }
+                MemuAction::Minimize => {
+                    info!("minimize window requested");
+                    window.minimize_window();
+                }
+                _ => {
                     cx.propagate();
                 }
             }))
@@ -351,6 +356,9 @@ fn main() {
             }
             MemuAction::CheckForUpdates => {
                 check_for_updates(true, cx);
+            }
+            MemuAction::Minimize => {
+                info!("minimize action ignored because no target window is active");
             }
         });
         cx.set_menus(vec![Menu {
