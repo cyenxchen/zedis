@@ -50,3 +50,7 @@ State-driven architecture: `connection/` (Redis 连接层) → `states/` (状态
 
 ## 仓库
 默认仓库为fork仓库
+
+## 发布
+
+- 打版本 tag 前，必须先同步更新 `Cargo.toml` 和 `Cargo.lock` 中的 `zedis` 版本号，确保 `CARGO_PKG_VERSION` 与 tag 一致，避免更新检测反复提示同一版本。
