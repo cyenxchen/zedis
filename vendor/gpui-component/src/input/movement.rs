@@ -1,8 +1,9 @@
 use gpui::{Context, Point, Window};
+use tracing::debug;
 
 use crate::input::{
-    InputState, MoveDown, MoveEnd, MoveHome, MoveLeft, MovePageDown, MovePageUp, MoveRight,
-    MoveToEnd, MoveToNextWord, MoveToPreviousWord, MoveToStart, MoveUp, RopeExt as _,
+    InputState, MoveDown, MoveEnd, MoveHome, MoveLeft, MovePageDown, MovePageUp, MoveRight, MoveToEnd, MoveToNextWord,
+    MoveToPreviousWord, MoveToStart, MoveUp, RopeExt as _,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,8 +21,7 @@ impl InputState {
         };
 
         let point = self.text.offset_to_point(self.cursor());
-        let row = point.row.saturating_sub(last_layout.visible_range.start);
-        let Some(line) = last_layout.lines.get(row) else {
+        let Some(line) = last_layout.line(point.row) else {
             self.preferred_column = None;
             return;
         };
@@ -39,13 +39,18 @@ impl InputState {
     /// The offset is the UTF-8 offset.
     ///
     /// Ensure the offset use self.next_boundary or self.previous_boundary to get the correct offset.
-    pub(crate) fn move_to(
-        &mut self,
-        offset: usize,
-        direction: Option<MoveDirection>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn move_to(&mut self, offset: usize, direction: Option<MoveDirection>, cx: &mut Context<Self>) {
         let offset = offset.clamp(0, self.text.len());
+        let prefer_next_visible =
+            direction == Some(MoveDirection::Down) || direction.is_none() && offset >= self.cursor();
+        let normalized_offset = self.normalize_offset_for_json_fold(offset, prefer_next_visible);
+        if normalized_offset != offset {
+            debug!(
+                "Normalized cursor movement out of folded JSON content: from={}, to={}",
+                offset, normalized_offset
+            );
+        }
+        let offset = normalized_offset;
         self.selected_range = (offset..offset).into();
         self.scroll_to(offset, direction, cx);
         self.pause_blink_cursor(cx);
@@ -58,12 +63,7 @@ impl InputState {
     /// Move the cursor vertically by one line (up or down) while preserving the column if possible.
     ///
     /// move_lines: Number of lines to move vertically (positive for down, negative for up).
-    pub(super) fn move_vertical(
-        &mut self,
-        move_lines: isize,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn move_vertical(&mut self, move_lines: isize, _: &mut Window, cx: &mut Context<Self>) {
         if self.mode.is_single_line() {
             return;
         }
@@ -78,6 +78,18 @@ impl InputState {
         display_point.row = display_point.row.saturating_add_signed(move_lines);
         display_point.column = 0;
         let mut new_offset = self.text_wrapper.display_point_to_offset(display_point);
+        let target_row = self.text.offset_to_point(new_offset).row;
+        if self.is_line_hidden_by_fold(target_row) {
+            let visible_row = if move_lines < 0 {
+                (0..=target_row).rev().find(|row| !self.is_line_hidden_by_fold(*row))
+            } else {
+                (target_row..self.text_wrapper.lines.len()).find(|row| !self.is_line_hidden_by_fold(*row))
+            };
+
+            if let Some(row) = visible_row {
+                new_offset = self.text.line_start_offset(row);
+            }
+        }
 
         if let Some((preferred_x, column)) = was_preferred_column {
             // Get display point again to update local_row.
@@ -188,12 +200,7 @@ impl InputState {
         self.move_vertical(-display_lines, window, cx);
     }
 
-    pub(super) fn page_down(
-        &mut self,
-        _: &MovePageDown,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn page_down(&mut self, _: &MovePageDown, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode.is_single_line() {
             return;
         }
@@ -218,12 +225,7 @@ impl InputState {
         self.move_to(offset, Some(MoveDirection::Down), cx);
     }
 
-    pub(super) fn move_to_start(
-        &mut self,
-        _: &MoveToStart,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn move_to_start(&mut self, _: &MoveToStart, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(0, None, cx);
     }
 
@@ -231,22 +233,12 @@ impl InputState {
         self.move_to(self.text.len(), None, cx);
     }
 
-    pub(super) fn move_to_previous_word(
-        &mut self,
-        _: &MoveToPreviousWord,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn move_to_previous_word(&mut self, _: &MoveToPreviousWord, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.previous_start_of_word();
         self.move_to(offset, None, cx);
     }
 
-    pub(super) fn move_to_next_word(
-        &mut self,
-        _: &MoveToNextWord,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn move_to_next_word(&mut self, _: &MoveToNextWord, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.next_end_of_word();
         self.move_to(offset, None, cx);
     }

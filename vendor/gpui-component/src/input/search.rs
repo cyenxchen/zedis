@@ -112,6 +112,10 @@ impl SearchMatcher {
         self.matched_ranges.get(self.current_match_ix + 1).cloned()
     }
 
+    fn current(&self) -> Option<Range<usize>> {
+        self.matched_ranges.get(self.current_match_ix).cloned()
+    }
+
     fn label(&self) -> String {
         if self.len() == 0 {
             return "0/0".to_string();
@@ -302,6 +306,11 @@ impl SearchPanel {
             self.matcher
                 .update_cursor_by_offset(visible_range_offset.start);
         }
+        if let Some(range) = self.matcher.current() {
+            self.editor.update(cx, |state, cx| {
+                state.reveal_json_folded_range(&range, cx);
+            });
+        }
         cx.notify();
     }
 
@@ -337,6 +346,7 @@ impl SearchPanel {
                 "input search navigate prev"
             );
             self.editor.update(cx, |state, cx| {
+                state.reveal_json_folded_range(&range, cx);
                 state.scroll_to(range.start, scroll_direction, cx);
             });
         }
@@ -352,6 +362,7 @@ impl SearchPanel {
                 "input search navigate next"
             );
             self.editor.update(cx, |state, cx| {
+                state.reveal_json_folded_range(&range, cx);
                 state.scroll_to(range.end, scroll_direction, cx);
             });
         }
@@ -381,6 +392,7 @@ impl SearchPanel {
                 cx.update(|window, cx| {
                     text_state.update(cx, |state, cx| {
                         let range_utf16 = state.range_to_utf16(&range);
+                        state.reveal_json_folded_range(&next_range, cx);
                         state.scroll_to(next_range.end, Some(MoveDirection::Down), cx);
                         state.replace_text_in_range_silent(
                             Some(range_utf16),

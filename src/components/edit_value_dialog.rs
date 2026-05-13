@@ -43,6 +43,13 @@ use std::rc::Rc;
 // Constants
 const DEFAULT_TAB_SIZE: usize = 2;
 
+fn supports_json_folding(format: EditFormat) -> bool {
+    matches!(
+        format,
+        EditFormat::Json | EditFormat::MessagePack | EditFormat::ProtobufJson
+    )
+}
+
 /// Configuration for the edit value dialog
 #[allow(clippy::type_complexity)]
 pub struct EditValueDialogParams {
@@ -121,6 +128,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                 hard_tabs: false,
             })
             .searchable(true)
+            .json_folding(supports_json_folding(initial_format))
             .soft_wrap(true)
     });
 
@@ -217,6 +225,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             let new_text = s.editor_text.clone();
                             editor_text_clone.set(new_text.clone());
                             editor_input_clone.update(cx, |state, cx| {
+                                state.set_json_folding(supports_json_folding(fmt), window, cx);
                                 state.set_value(new_text, window, cx);
                             });
                         }

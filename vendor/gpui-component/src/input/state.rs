@@ -4,21 +4,22 @@
 //! https://github.com/zed-industries/zed/blob/main/crates/gpui/examples/input.rs
 use anyhow::Result;
 use gpui::{
-    Action, App, AppContext, Bounds, ClipboardItem, Context, Entity, EntityInputHandler,
-    EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, Render, ScrollHandle, ScrollWheelEvent, SharedString, Styled as _, Subscription,
-    Task, UTF16Selection, Window, actions, div, point, prelude::FluentBuilder as _, px,
+    Action, App, AppContext, Bounds, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Styled as _, Subscription, Task, UTF16Selection, Window, actions, div, point,
+    prelude::FluentBuilder as _, px,
 };
 use ropey::{Rope, RopeSlice};
 use serde::Deserialize;
 use std::ops::Range;
 use std::rc::Rc;
 use sum_tree::Bias;
+use tracing::debug;
 use unicode_segmentation::*;
 
 use super::{
-    blink_cursor::BlinkCursor, change::Change, element::TextElement, mask_pattern::MaskPattern,
+    blink_cursor::BlinkCursor, change::Change, element::TextElement, folding::JsonFoldState, mask_pattern::MaskPattern,
     mode::InputMode, number_input, text_wrapper::TextWrapper,
 };
 use crate::Size;
@@ -226,6 +227,10 @@ pub(crate) fn init(cx: &mut App) {
 pub(super) struct LastLayout {
     /// The visible range (no wrap) of lines in the viewport, the value is row (0-based) index.
     pub(super) visible_range: Range<usize>,
+    /// Actual text rows visible in the viewport. This can be non-contiguous when code folding hides rows.
+    pub(super) visible_rows: Rc<Vec<usize>>,
+    /// Start byte offset for each row in `visible_rows`.
+    pub(super) visible_row_offsets: Rc<Vec<usize>>,
     /// The first visible line top position in scroll viewport.
     pub(super) visible_top: Pixels,
     /// The range of byte offset of the visible lines.
@@ -249,11 +254,8 @@ impl LastLayout {
     ///
     /// Returns None if the row is out of range.
     pub(crate) fn line(&self, row: usize) -> Option<&LineLayout> {
-        if row < self.visible_range.start || row >= self.visible_range.end {
-            return None;
-        }
-
-        self.lines.get(row.saturating_sub(self.visible_range.start))
+        let index = self.visible_rows.iter().position(|visible_row| *visible_row == row)?;
+        self.lines.get(index)
     }
 }
 
@@ -291,6 +293,7 @@ pub struct InputState {
     pub(super) masked: bool,
     pub(super) clean_on_escape: bool,
     pub(super) soft_wrap: bool,
+    pub(super) json_folding: JsonFoldState,
     pub(super) pattern: Option<regex::Regex>,
     pub(super) validate: Option<Box<dyn Fn(&str, &mut Context<Self>) -> bool + 'static>>,
     pub(crate) scroll_handle: ScrollHandle,
@@ -384,6 +387,7 @@ impl InputState {
             masked: false,
             clean_on_escape: false,
             soft_wrap: true,
+            json_folding: JsonFoldState::default(),
             loading: false,
             pattern: None,
             validate: None,
@@ -456,6 +460,20 @@ impl InputState {
         self
     }
 
+    /// Enable lightweight JSON code folding in code editor mode.
+    pub fn json_folding(mut self, enabled: bool) -> Self {
+        debug_assert!(self.mode.is_code_editor() && self.mode.is_multi_line());
+        self.json_folding.set_enabled(enabled);
+        self
+    }
+
+    /// Enable or disable lightweight JSON code folding at runtime.
+    pub fn set_json_folding(&mut self, enabled: bool, _: &mut Window, cx: &mut Context<Self>) {
+        debug_assert!(self.mode.is_code_editor() && self.mode.is_multi_line());
+        self.json_folding.set_enabled(enabled);
+        cx.notify();
+    }
+
     /// Set this input is searchable, default is false (Default true for Code Editor).
     pub fn searchable(mut self, searchable: bool) -> Self {
         debug_assert!(self.mode.is_multi_line());
@@ -494,9 +512,7 @@ impl InputState {
     /// default: 2
     pub fn rows(mut self, rows: usize) -> Self {
         match &mut self.mode {
-            InputMode::PlainText { rows: r, .. } | InputMode::CodeEditor { rows: r, .. } => {
-                *r = rows
-            }
+            InputMode::PlainText { rows: r, .. } | InputMode::CodeEditor { rows: r, .. } => *r = rows,
             InputMode::AutoGrow {
                 max_rows: max_r,
                 rows: r,
@@ -510,16 +526,10 @@ impl InputState {
     }
 
     /// Set highlighter language for for [`InputMode::CodeEditor`] mode.
-    pub fn set_highlighter(
-        &mut self,
-        new_language: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_highlighter(&mut self, new_language: impl Into<SharedString>, cx: &mut Context<Self>) {
         match &mut self.mode {
             InputMode::CodeEditor {
-                language,
-                highlighter,
-                ..
+                language, highlighter, ..
             } => {
                 *language = new_language.into();
                 *highlighter.borrow_mut() = None;
@@ -550,12 +560,7 @@ impl InputState {
     }
 
     /// Set placeholder
-    pub fn set_placeholder(
-        &mut self,
-        placeholder: impl Into<SharedString>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, _: &mut Window, cx: &mut Context<Self>) {
         self.placeholder = placeholder.into();
         cx.notify();
     }
@@ -568,19 +573,18 @@ impl InputState {
     /// - The index of the sub-line (zero-based) within the line containing the offset.
     /// - The position of the offset.
     #[allow(unused)]
-    pub(super) fn line_and_position_for_offset(
-        &self,
-        offset: usize,
-    ) -> (usize, usize, Option<Point<Pixels>>) {
+    pub(super) fn line_and_position_for_offset(&self, offset: usize) -> (usize, usize, Option<Point<Pixels>>) {
         let Some(last_layout) = &self.last_layout else {
             return (0, 0, None);
         };
         let line_height = last_layout.line_height;
 
-        let mut prev_lines_offset = last_layout.visible_range_offset.start;
         let mut y_offset = last_layout.visible_top;
         for (line_index, line) in last_layout.lines.iter().enumerate() {
-            let local_offset = offset.saturating_sub(prev_lines_offset);
+            let Some(prev_lines_offset) = last_layout.visible_row_offsets.get(line_index) else {
+                continue;
+            };
+            let local_offset = offset.saturating_sub(*prev_lines_offset);
             if let Some(pos) = line.position_for_index(local_offset, line_height) {
                 let sub_line_index = (pos.y / line_height) as usize;
                 let adjusted_pos = point(pos.x + last_layout.line_number_width, pos.y + y_offset);
@@ -588,7 +592,6 @@ impl InputState {
             }
 
             y_offset += line.size(line_height).height;
-            prev_lines_offset += line.len() + 1;
         }
         (0, 0, None)
     }
@@ -596,12 +599,7 @@ impl InputState {
     /// Set the text of the input field.
     ///
     /// And the selection_range will be reset to 0..0.
-    pub fn set_value(
-        &mut self,
-        value: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_value(&mut self, value: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
         self.history.ignore = true;
         let was_disabled = self.disabled;
         self.disabled = false;
@@ -620,6 +618,8 @@ impl InputState {
             self._pending_update = true;
             self.lsp.reset();
         }
+        self.json_folding.clear();
+        self.json_folding.mark_dirty();
 
         // Move scroll to top
         self.scroll_handle.set_offset(point(px(0.), px(0.)));
@@ -630,12 +630,7 @@ impl InputState {
     /// Insert text at the current cursor position.
     ///
     /// And the cursor will be moved to the end of inserted text.
-    pub fn insert(
-        &mut self,
-        text: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn insert(&mut self, text: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
         let text: SharedString = text.into();
         let range_utf16 = self.range_to_utf16(&(self.cursor()..self.cursor()));
         self.replace_text_in_range_silent(Some(range_utf16), &text, window, cx);
@@ -645,23 +640,13 @@ impl InputState {
     /// Replace text at the current cursor position.
     ///
     /// And the cursor will be moved to the end of replaced text.
-    pub fn replace(
-        &mut self,
-        text: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn replace(&mut self, text: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
         let text: SharedString = text.into();
         self.replace_text_in_range_silent(None, &text, window, cx);
         self.selected_range = (self.selected_range.end..self.selected_range.end).into();
     }
 
-    fn replace_text(
-        &mut self,
-        text: impl Into<SharedString>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn replace_text(&mut self, text: impl Into<SharedString>, window: &mut Window, cx: &mut Context<Self>) {
         let text: SharedString = text.into();
         let range = 0..self.text.chars().map(|c| c.len_utf16()).sum();
         self.replace_text_in_range_silent(Some(range), &text, window, cx);
@@ -743,12 +728,7 @@ impl InputState {
     /// Set the regular expression pattern of the input field with reference.
     ///
     /// Only for [`InputMode::SingleLine`] mode.
-    pub fn set_pattern(
-        &mut self,
-        pattern: regex::Regex,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    pub fn set_pattern(&mut self, pattern: regex::Regex, _window: &mut Window, _cx: &mut Context<Self>) {
         debug_assert!(self.mode.is_single_line());
         self.pattern = Some(pattern);
     }
@@ -807,18 +787,77 @@ impl InputState {
     /// Set (0-based) [`Position`] of the cursor.
     ///
     /// This will move the cursor to the specified line and column, and update the selection range.
-    pub fn set_cursor_position(
-        &mut self,
-        position: impl Into<Position>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_cursor_position(&mut self, position: impl Into<Position>, window: &mut Window, cx: &mut Context<Self>) {
         let position: Position = position.into();
         let offset = self.text.position_to_offset(&position);
 
         self.move_to(offset, None, cx);
         self.update_preferred_column();
         self.focus(window, cx);
+    }
+
+    pub(super) fn ensure_json_fold_ranges(&mut self) {
+        self.json_folding.ensure_ranges(&self.text);
+    }
+
+    pub(super) fn is_line_hidden_by_fold(&self, row: usize) -> bool {
+        self.json_folding.is_row_hidden(row)
+    }
+
+    pub(super) fn normalize_offset_for_json_fold(&self, offset: usize, prefer_next_visible: bool) -> usize {
+        let row = self.text.offset_to_point(offset).row;
+        let Some(range) = self.json_folding.hidden_range_for_row(row) else {
+            return offset;
+        };
+
+        if prefer_next_visible {
+            if range.end_row + 1 < self.text.lines_len() {
+                self.text.line_start_offset(range.end_row + 1)
+            } else {
+                range.start_offset
+            }
+        } else {
+            range.start_offset
+        }
+    }
+
+    pub(super) fn reveal_json_folded_range(&mut self, range: &Range<usize>, cx: &mut Context<Self>) {
+        if range.is_empty() {
+            return;
+        }
+
+        self.json_folding.ensure_ranges(&self.text);
+        let text_len = self.text.len();
+        let start_offset = range.start.min(text_len);
+        let end_offset = range.end.saturating_sub(1).min(text_len);
+        let start_row = self.text.offset_to_point(start_offset).row;
+        let end_row = self.text.offset_to_point(end_offset).row;
+        let unfolded_count = self.json_folding.unfold_ranges_intersecting_rows(start_row, end_row);
+
+        if unfolded_count > 0 {
+            debug!(
+                start_row,
+                end_row,
+                unfolded_count,
+                "input json folding reveal folded search match"
+            );
+            cx.notify();
+        }
+    }
+
+    pub(super) fn visible_wrapped_line_count(&self) -> usize {
+        self.json_folding
+            .visible_wrapped_line_count(self.text_wrapper.lines.len(), |row| {
+                self.text_wrapper
+                    .lines
+                    .get(row)
+                    .map(|line| line.lines_len())
+                    .unwrap_or(0)
+            })
+    }
+
+    pub(super) fn fold_marker_for_row(&self, row: usize) -> Option<String> {
+        self.json_folding.fold_marker_for_row(&self.text, row)
     }
 
     /// Focus the input field.
@@ -858,41 +897,21 @@ impl InputState {
         cx.notify();
     }
 
-    pub(super) fn select_to_start(
-        &mut self,
-        _: &SelectToStart,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn select_to_start(&mut self, _: &SelectToStart, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(0, cx);
     }
 
-    pub(super) fn select_to_end(
-        &mut self,
-        _: &SelectToEnd,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn select_to_end(&mut self, _: &SelectToEnd, _: &mut Window, cx: &mut Context<Self>) {
         let end = self.text.len();
         self.select_to(end, cx);
     }
 
-    pub(super) fn select_to_start_of_line(
-        &mut self,
-        _: &SelectToStartOfLine,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn select_to_start_of_line(&mut self, _: &SelectToStartOfLine, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.start_of_line();
         self.select_to(offset, cx);
     }
 
-    pub(super) fn select_to_end_of_line(
-        &mut self,
-        _: &SelectToEndOfLine,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn select_to_end_of_line(&mut self, _: &SelectToEndOfLine, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.end_of_line();
         self.select_to(offset, cx);
     }
@@ -907,12 +926,7 @@ impl InputState {
         self.select_to(offset, cx);
     }
 
-    pub(super) fn select_to_next_word(
-        &mut self,
-        _: &SelectToNextWordEnd,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn select_to_next_word(&mut self, _: &SelectToNextWordEnd, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.next_end_of_word();
         self.select_to(offset, cx);
     }
@@ -966,17 +980,12 @@ impl InputState {
     /// Get start line of selection start or end (The min value).
     ///
     /// This is means is always get the first line of selection.
-    pub(super) fn start_of_line_of_selection(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> usize {
+    pub(super) fn start_of_line_of_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) -> usize {
         if self.mode.is_single_line() {
             return 0;
         }
 
-        let mut offset =
-            self.previous_boundary(self.selected_range.start.min(self.selected_range.end));
+        let mut offset = self.previous_boundary(self.selected_range.start.min(self.selected_range.end));
         if self.text.char_at(offset) == Some('\r') {
             offset += 1;
         }
@@ -1061,21 +1070,11 @@ impl InputState {
         if offset == self.cursor() {
             offset = offset.saturating_sub(1);
         }
-        self.replace_text_in_range_silent(
-            Some(self.range_to_utf16(&(offset..self.cursor()))),
-            "",
-            window,
-            cx,
-        );
+        self.replace_text_in_range_silent(Some(self.range_to_utf16(&(offset..self.cursor()))), "", window, cx);
         self.pause_blink_cursor(cx);
     }
 
-    pub(super) fn delete_to_end_of_line(
-        &mut self,
-        _: &DeleteToEndOfLine,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn delete_to_end_of_line(&mut self, _: &DeleteToEndOfLine, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             self.replace_text_in_range(None, "", window, cx);
             self.pause_blink_cursor(cx);
@@ -1086,12 +1085,7 @@ impl InputState {
         if offset == self.cursor() {
             offset = (offset + 1).clamp(0, self.text.len());
         }
-        self.replace_text_in_range_silent(
-            Some(self.range_to_utf16(&(self.cursor()..offset))),
-            "",
-            window,
-            cx,
-        );
+        self.replace_text_in_range_silent(Some(self.range_to_utf16(&(self.cursor()..offset))), "", window, cx);
         self.pause_blink_cursor(cx);
     }
 
@@ -1108,21 +1102,11 @@ impl InputState {
         }
 
         let offset = self.previous_start_of_word();
-        self.replace_text_in_range_silent(
-            Some(self.range_to_utf16(&(offset..self.cursor()))),
-            "",
-            window,
-            cx,
-        );
+        self.replace_text_in_range_silent(Some(self.range_to_utf16(&(offset..self.cursor()))), "", window, cx);
         self.pause_blink_cursor(cx);
     }
 
-    pub(super) fn delete_next_word(
-        &mut self,
-        _: &DeleteToNextWordEnd,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn delete_next_word(&mut self, _: &DeleteToNextWordEnd, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             self.replace_text_in_range(None, "", window, cx);
             self.pause_blink_cursor(cx);
@@ -1130,12 +1114,7 @@ impl InputState {
         }
 
         let offset = self.next_end_of_word();
-        self.replace_text_in_range_silent(
-            Some(self.range_to_utf16(&(self.cursor()..offset))),
-            "",
-            window,
-            cx,
-        );
+        self.replace_text_in_range_silent(Some(self.range_to_utf16(&(self.cursor()..offset))), "", window, cx);
         self.pause_blink_cursor(cx);
     }
 
@@ -1199,12 +1178,7 @@ impl InputState {
         cx.propagate();
     }
 
-    pub(super) fn on_mouse_down(
-        &mut self,
-        event: &MouseDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Clear inline completion on any mouse interaction
         self.clear_inline_completion(cx);
 
@@ -1218,6 +1192,10 @@ impl InputState {
 
         self.selecting = true;
         let offset = self.index_for_mouse_position(event.position);
+
+        if event.button == MouseButton::Left && event.click_count == 1 && self.toggle_json_fold_at_offset(offset, cx) {
+            return;
+        }
 
         if self.handle_click_hover_definition(event, offset, window, cx) {
             return;
@@ -1242,12 +1220,25 @@ impl InputState {
         }
     }
 
-    pub(super) fn on_mouse_up(
-        &mut self,
-        _: &MouseUpEvent,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) {
+    fn toggle_json_fold_at_offset(&mut self, offset: usize, cx: &mut Context<Self>) -> bool {
+        let Some(range) = self.json_folding.toggle_at_offset(&self.text, offset) else {
+            return false;
+        };
+
+        let folded = self.json_folding.is_row_hidden(range.start_row + 1);
+        debug!(
+            "Toggled JSON fold: start_row={}, end_row={}, folded={}",
+            range.start_row, range.end_row, folded
+        );
+        self.selected_range = (range.start_offset..range.start_offset).into();
+        self.selection_reversed = false;
+        self.selecting = false;
+        self.update_preferred_column();
+        cx.notify();
+        true
+    }
+
+    pub(super) fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.selection_reversed = false;
         }
@@ -1255,22 +1246,13 @@ impl InputState {
         self.selected_word_range = None;
     }
 
-    pub(super) fn on_mouse_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Show diagnostic popover on mouse move
         let offset = self.index_for_mouse_position(event.position);
         self.handle_mouse_move(offset, event, window, cx);
 
         if self.mode.is_code_editor() {
-            if let Some(diagnostic) = self
-                .mode
-                .diagnostics()
-                .and_then(|set| set.for_offset(offset))
-            {
+            if let Some(diagnostic) = self.mode.diagnostics().and_then(|set| set.for_offset(offset)) {
                 if let Some(diagnostic_popover) = self.diagnostic_popover.as_ref() {
                     if diagnostic_popover.read(cx).diagnostic.range == diagnostic.range {
                         diagnostic_popover.update(cx, |this, cx| {
@@ -1293,12 +1275,7 @@ impl InputState {
         }
     }
 
-    pub(super) fn on_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn on_scroll_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
         let line_height = self
             .last_layout
             .as_ref()
@@ -1317,17 +1294,11 @@ impl InputState {
         self.diagnostic_popover = None;
     }
 
-    pub(super) fn update_scroll_offset(
-        &mut self,
-        offset: Option<Point<Pixels>>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn update_scroll_offset(&mut self, offset: Option<Point<Pixels>>, cx: &mut Context<Self>) {
         let mut offset = offset.unwrap_or(self.scroll_handle.offset());
 
-        let safe_y_range =
-            (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.0))..px(0.);
-        let safe_x_range =
-            (-self.scroll_size.width + self.input_bounds.size.width).min(px(0.0))..px(0.);
+        let safe_y_range = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.0))..px(0.);
+        let safe_x_range = (-self.scroll_size.width + self.input_bounds.size.width).min(px(0.0))..px(0.);
 
         offset.y = if self.mode.is_single_line() {
             px(0.)
@@ -1342,12 +1313,7 @@ impl InputState {
     /// Scroll to make the given offset visible.
     ///
     /// If `direction` is Some, will keep edges at the same side.
-    pub(crate) fn scroll_to(
-        &mut self,
-        offset: usize,
-        direction: Option<MoveDirection>,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn scroll_to(&mut self, offset: usize, direction: Option<MoveDirection>, cx: &mut Context<Self>) {
         let Some(last_layout) = self.last_layout.as_ref() else {
             return;
         };
@@ -1369,13 +1335,12 @@ impl InputState {
                 break;
             }
 
-            row_offset_y += wrap_line.height(line_height);
+            if !self.is_line_hidden_by_fold(ix) {
+                row_offset_y += wrap_line.height(line_height);
+            }
         }
 
-        if let Some(line) = last_layout
-            .lines
-            .get(row.saturating_sub(last_layout.visible_range.start))
-        {
+        if let Some(line) = last_layout.line(row) {
             // Check to scroll horizontally and soft wrap lines
             if let Some(pos) = line.position_for_index(point.column, line_height) {
                 let bounds_width = bounds.size.width - last_layout.line_number_width;
@@ -1514,9 +1479,7 @@ impl InputState {
             return 0;
         }
 
-        let (Some(bounds), Some(last_layout)) =
-            (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
+        let (Some(bounds), Some(last_layout)) = (self.last_bounds.as_ref(), self.last_layout.as_ref()) else {
             return 0;
         };
 
@@ -1537,13 +1500,11 @@ impl InputState {
 
         let mut index = last_layout.visible_range_offset.start;
         let mut y_offset = last_layout.visible_top;
-        for (ix, line) in self
-            .text_wrapper
-            .lines
-            .iter()
-            .skip(last_layout.visible_range.start)
-            .enumerate()
-        {
+        for (ix, row) in last_layout.visible_rows.iter().enumerate() {
+            let Some(line) = self.text_wrapper.lines.get(*row) else {
+                continue;
+            };
+            index = self.text.line_start_offset(*row);
             let line_origin = self.line_origin_with_y_offset(&mut y_offset, line, line_height);
             let pos = inner_position - line_origin;
 
@@ -1587,12 +1548,7 @@ impl InputState {
     }
 
     /// Returns a y offsetted point for the line origin.
-    fn line_origin_with_y_offset(
-        &self,
-        y_offset: &mut Pixels,
-        line: &LineItem,
-        line_height: Pixels,
-    ) -> Point<Pixels> {
+    fn line_origin_with_y_offset(&self, y_offset: &mut Pixels, line: &LineItem, line_height: Pixels) -> Point<Pixels> {
         // NOTE: About line.wrap_boundaries.len()
         //
         // If only 1 line, the value is 0
@@ -1736,12 +1692,7 @@ impl InputState {
         self.pause_blink_cursor(cx);
     }
 
-    pub(super) fn on_drag_move(
-        &mut self,
-        event: &MouseMoveEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn on_drag_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.text.len() == 0 {
             return;
         }
@@ -1801,12 +1752,7 @@ impl InputState {
         self
     }
 
-    pub fn set_mask_pattern(
-        &mut self,
-        pattern: impl Into<MaskPattern>,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_mask_pattern(&mut self, pattern: impl Into<MaskPattern>, _: &mut Window, cx: &mut Context<Self>) {
         self.mask_pattern = pattern.into();
         if let Some(placeholder) = self.mask_pattern.placeholder() {
             self.placeholder = placeholder.into();
@@ -1879,12 +1825,7 @@ impl InputState {
     ) {
         let start = self.text.position_to_offset(&lsp_range.start);
         let end = self.text.position_to_offset(&lsp_range.end);
-        self.replace_text_in_range_silent(
-            Some(self.range_to_utf16(&(start..end))),
-            new_text,
-            window,
-            cx,
-        );
+        self.replace_text_in_range_silent(Some(self.range_to_utf16(&(start..end))), new_text, window, cx);
     }
 
     /// Replace text in range in silent.
@@ -1928,13 +1869,8 @@ impl EntityInputHandler for InputState {
         })
     }
 
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        self.ime_marked_range
-            .map(|range| self.range_to_utf16(&range.into()))
+    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+        self.ime_marked_range.map(|range| self.range_to_utf16(&range.into()))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -1957,6 +1893,10 @@ impl EntityInputHandler for InputState {
         }
 
         self.pause_blink_cursor(cx);
+        if self.json_folding.clear() {
+            debug!("Cleared JSON folds before editing text");
+        }
+        self.json_folding.mark_dirty();
 
         let range = range_utf16
             .as_ref()
@@ -1983,8 +1923,7 @@ impl EntityInputHandler for InputState {
             if !self.mask_pattern.is_none() {
                 let mask_text = self.mask_pattern.mask(&pending_text);
                 self.text = Rope::from(mask_text.as_str());
-                let new_text_len =
-                    (new_text.len() + mask_text.len()).saturating_sub(pending_text.len());
+                let new_text_len = (new_text.len() + mask_text.len()).saturating_sub(pending_text.len());
                 new_offset = (range.start + new_text_len).min(mask_text.len());
             }
         }
@@ -1994,10 +1933,8 @@ impl EntityInputHandler for InputState {
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
-        self.text_wrapper
-            .update(&self.text, &range, &Rope::from(new_text), cx);
-        self.mode
-            .update_highlighter(&range, &self.text, &new_text, true, cx);
+        self.text_wrapper.update(&self.text, &range, &Rope::from(new_text), cx);
+        self.mode.update_highlighter(&range, &self.text, &new_text, true, cx);
         self.lsp.update(&self.text, window, cx);
         self.selected_range = (new_offset..new_offset).into();
         self.ime_marked_range.take();
@@ -2024,6 +1961,10 @@ impl EntityInputHandler for InputState {
             return;
         }
 
+        if self.json_folding.clear() {
+            debug!("Cleared JSON folds before marking text");
+        }
+        self.json_folding.mark_dirty();
         self.lsp.reset();
 
         let range = range_utf16
@@ -2049,10 +1990,8 @@ impl EntityInputHandler for InputState {
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)
         }
-        self.text_wrapper
-            .update(&self.text, &range, &Rope::from(new_text), cx);
-        self.mode
-            .update_highlighter(&range, &self.text, &new_text, true, cx);
+        self.text_wrapper.update(&self.text, &range, &Rope::from(new_text), cx);
+        self.mode.update_highlighter(&range, &self.text, &new_text, true, cx);
         self.lsp.update(&self.text, window, cx);
         if new_text.is_empty() {
             // Cancel selection, when cancel IME input.
@@ -2090,30 +2029,27 @@ impl EntityInputHandler for InputState {
         let mut end_origin = None;
         let line_number_origin = point(line_number_width, px(0.));
         let mut y_offset = last_layout.visible_top;
-        let mut index_offset = last_layout.visible_range_offset.start;
 
-        for line in last_layout.lines.iter() {
+        for (ix, line) in last_layout.lines.iter().enumerate() {
+            let Some(index_offset) = last_layout.visible_row_offsets.get(ix) else {
+                continue;
+            };
             if start_origin.is_some() && end_origin.is_some() {
                 break;
             }
 
             if start_origin.is_none() {
-                if let Some(p) =
-                    line.position_for_index(range.start.saturating_sub(index_offset), line_height)
-                {
+                if let Some(p) = line.position_for_index(range.start.saturating_sub(*index_offset), line_height) {
                     start_origin = Some(p + point(px(0.), y_offset));
                 }
             }
 
             if end_origin.is_none() {
-                if let Some(p) =
-                    line.position_for_index(range.end.saturating_sub(index_offset), line_height)
-                {
+                if let Some(p) = line.position_for_index(range.end.saturating_sub(*index_offset), line_height) {
                     end_origin = Some(p + point(px(0.), y_offset));
                 }
             }
 
-            index_offset += line.len() + 1;
             y_offset += line.size(line_height).height;
         }
 
@@ -2138,10 +2074,10 @@ impl EntityInputHandler for InputState {
         let last_layout = self.last_layout.as_ref()?;
         let line_height = last_layout.line_height;
         let line_point = self.last_bounds?.localize(&point)?;
-        let offset = last_layout.visible_range_offset.start;
 
-        for line in last_layout.lines.iter() {
+        for (ix, line) in last_layout.lines.iter().enumerate() {
             if let Some(utf8_index) = line.index_for_position(line_point, line_height) {
+                let offset = last_layout.visible_row_offsets.get(ix)?;
                 return Some(self.offset_to_utf16(offset + utf8_index));
             }
         }
@@ -2159,8 +2095,7 @@ impl Focusable for InputState {
 impl Render for InputState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self._pending_update {
-            self.mode
-                .update_highlighter(&(0..0), &self.text, "", false, cx);
+            self.mode.update_highlighter(&(0..0), &self.text, "", false, cx);
             self.lsp.update(&self.text, window, cx);
             self._pending_update = false;
         }

@@ -1,14 +1,13 @@
 use gpui::{
-    Bounds, Context, EntityInputHandler as _, Hsla, Path, PathBuilder, Pixels, SharedString,
-    TextRun, TextStyle, Window, point, px,
+    Bounds, Context, EntityInputHandler as _, Hsla, Path, PathBuilder, Pixels, SharedString, TextRun, TextStyle,
+    Window, point, px,
 };
 use ropey::RopeSlice;
 
 use crate::{
     RopeExt,
     input::{
-        Indent, IndentInline, InputState, LastLayout, Outdent, OutdentInline, element::TextElement,
-        mode::InputMode,
+        Indent, IndentInline, InputState, LastLayout, Outdent, OutdentInline, element::TextElement, mode::InputMode,
     },
 };
 
@@ -57,9 +56,7 @@ impl InputMode {
     #[inline]
     pub(super) fn is_indentable(&self) -> bool {
         match self {
-            InputMode::PlainText { multi_line, .. } | InputMode::CodeEditor { multi_line, .. } => {
-                *multi_line
-            }
+            InputMode::PlainText { multi_line, .. } | InputMode::CodeEditor { multi_line, .. } => *multi_line,
             _ => false,
         }
     }
@@ -119,18 +116,16 @@ impl TextElement {
             return None;
         }
 
-        let indent_width =
-            self.measure_indent_width(text_style, state.mode.tab_size().tab_size, window);
+        let indent_width = self.measure_indent_width(text_style, state.mode.tab_size().tab_size, window);
 
         let tab_size = state.mode.tab_size();
         let line_height = last_layout.line_height;
-        let visible_range = last_layout.visible_range.clone();
         let mut builder = PathBuilder::stroke(px(1.));
         let mut offset_y = last_layout.visible_top;
         let mut last_indents = vec![];
-        for ix in visible_range {
-            let line = state.text.slice_line(ix);
-            let Some(line_layout) = last_layout.line(ix) else {
+        for row in last_layout.visible_rows.iter() {
+            let line = state.text.slice_line(*row);
+            let Some(line_layout) = last_layout.line(*row) else {
                 continue;
             };
 
@@ -175,10 +170,7 @@ impl InputState {
     /// Only for [`InputMode::CodeEditor`] mode.
     pub fn indent_guides(mut self, indent_guides: bool) -> Self {
         debug_assert!(self.mode.is_code_editor() && self.mode.is_multi_line());
-        if let InputMode::CodeEditor {
-            indent_guides: l, ..
-        } = &mut self.mode
-        {
+        if let InputMode::CodeEditor { indent_guides: l, .. } = &mut self.mode {
             *l = indent_guides;
         }
         self
@@ -187,17 +179,9 @@ impl InputState {
     /// Set indent guides in code editor mode.
     ///
     /// Only for [`InputMode::CodeEditor`] mode.
-    pub fn set_indent_guides(
-        &mut self,
-        indent_guides: bool,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_indent_guides(&mut self, indent_guides: bool, _: &mut Window, cx: &mut Context<Self>) {
         debug_assert!(self.mode.is_code_editor());
-        if let InputMode::CodeEditor {
-            indent_guides: l, ..
-        } = &mut self.mode
-        {
+        if let InputMode::CodeEditor { indent_guides: l, .. } = &mut self.mode {
             *l = indent_guides;
         }
         cx.notify();
@@ -216,12 +200,7 @@ impl InputState {
         self
     }
 
-    pub(super) fn indent_inline(
-        &mut self,
-        _: &IndentInline,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn indent_inline(&mut self, _: &IndentInline, window: &mut Window, cx: &mut Context<Self>) {
         // First, try to accept inline completion if present
         if self.accept_inline_completion(window, cx) {
             return;
@@ -233,21 +212,11 @@ impl InputState {
         self.indent(true, window, cx);
     }
 
-    pub(super) fn outdent_inline(
-        &mut self,
-        _: &OutdentInline,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn outdent_inline(&mut self, _: &OutdentInline, window: &mut Window, cx: &mut Context<Self>) {
         self.outdent(false, window, cx);
     }
 
-    pub(super) fn outdent_block(
-        &mut self,
-        _: &Outdent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn outdent_block(&mut self, _: &Outdent, window: &mut Window, cx: &mut Context<Self>) {
         self.outdent(true, window, cx);
     }
 
@@ -290,22 +259,15 @@ impl InputState {
             if is_selected {
                 self.selected_range = (start_offset..selected_range.end + added_len).into();
             } else {
-                self.selected_range =
-                    (selected_range.start + added_len..selected_range.end + added_len).into();
+                self.selected_range = (selected_range.start + added_len..selected_range.end + added_len).into();
             }
         } else {
             // Selected none
             let offset = self.selected_range.start;
-            self.replace_text_in_range_silent(
-                Some(self.range_to_utf16(&(offset..offset))),
-                &tab_indent,
-                window,
-                cx,
-            );
+            self.replace_text_in_range_silent(Some(self.range_to_utf16(&(offset..offset))), &tab_indent, window, cx);
             added_len = tab_indent.len();
 
-            self.selected_range =
-                (selected_range.start + added_len..selected_range.end + added_len).into();
+            self.selected_range = (selected_range.start + added_len..selected_range.end + added_len).into();
         }
     }
 
@@ -351,8 +313,7 @@ impl InputState {
             }
 
             if is_selected {
-                self.selected_range =
-                    (start_offset..selected_range.end.saturating_sub(removed_len)).into();
+                self.selected_range = (start_offset..selected_range.end.saturating_sub(removed_len)).into();
             } else {
                 self.selected_range = (selected_range.start.saturating_sub(removed_len)
                     ..selected_range.end.saturating_sub(removed_len))
