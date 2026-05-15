@@ -120,10 +120,9 @@ impl ZedisKvFetcher for ZedisSetValues {
     /// Applies a filter to SET members by pattern matching.
     ///
     /// Resets the scan and loads members matching the keyword pattern.
-    fn filter(&self, keyword: SharedString, cx: &mut App) {
-        self.server_state.update(cx, |this, cx| {
-            this.filter_set_value(keyword, cx);
-        });
+    fn filter(&self, keyword: SharedString, cx: &mut App) -> bool {
+        self.server_state
+            .update(cx, |this, cx| this.filter_set_value(keyword, cx))
     }
 
     /// Removes a member from the SET at the given index.

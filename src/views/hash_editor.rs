@@ -118,10 +118,9 @@ impl ZedisKvFetcher for ZedisHashValues {
     /// Applies a filter to HASH fields by pattern matching.
     ///
     /// Resets the scan and loads fields matching the keyword pattern.
-    fn filter(&self, keyword: SharedString, cx: &mut App) {
-        self.server_state.update(cx, |this, cx| {
-            this.filter_hash_value(keyword, cx);
-        });
+    fn filter(&self, keyword: SharedString, cx: &mut App) -> bool {
+        self.server_state
+            .update(cx, |this, cx| this.filter_hash_value(keyword, cx))
     }
 
     /// Handles inline editing of a HASH field's value.

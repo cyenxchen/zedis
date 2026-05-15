@@ -236,24 +236,31 @@ impl ZedisServerState {
     /// # Arguments
     /// * `keyword` - The search keyword to filter field names (will be wrapped with wildcards)
     /// * `cx` - GPUI context for UI updates
-    pub fn filter_hash_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some(value) = self.value.as_mut() else {
-            return;
+    pub fn filter_hash_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) -> bool {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return false;
         };
         let Some(hash) = value.hash_value() else {
-            return;
+            return false;
+        };
+        let filter_keyword = if keyword.is_empty() {
+            None
+        } else {
+            Some(keyword.clone())
         };
 
         // Create new HASH state with filter keyword, reset cursor to start fresh scan
         let new_hash = RedisHashValue {
-            keyword: Some(keyword),
+            keyword: filter_keyword,
             size: hash.size,
             ..Default::default()
         };
         value.data = Some(RedisValueData::Hash(Arc::new(new_hash)));
+        self.remember_value_filter_keyword_for_key(key.as_str(), keyword);
 
         // Trigger load with the new filter
         self.load_more_hash_value(cx);
+        true
     }
     /// Removes a field from the Redis HASH.
     ///
@@ -360,6 +367,16 @@ impl ZedisServerState {
             },
             // UI callback: merge results into local state
             move |this, result, cx| {
+                if this.key.as_ref() != Some(&key_clone) {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    tracing::debug!(
+                        expected_key = key_clone.as_str(),
+                        current_key = current_key.as_str(),
+                        "Skip stale hash value pagination result"
+                    );
+                    return;
+                }
+
                 let mut should_load_more = false;
                 if let Ok((new_cursor, new_values)) = result
                     && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())

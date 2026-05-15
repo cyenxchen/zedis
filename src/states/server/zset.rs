@@ -312,13 +312,14 @@ impl ZedisServerState {
     /// # Arguments
     /// * `keyword` - The search keyword to filter members (empty to clear filter)
     /// * `cx` - GPUI context for UI updates
-    pub fn filter_zset_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some((_, value)) = self.try_get_mut_key_value() else {
-            return;
+    pub fn filter_zset_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) -> bool {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return false;
         };
         let Some(zset) = value.zset_value() else {
-            return;
+            return false;
         };
+        let cache_keyword = keyword.clone();
 
         // Convert empty string to None for consistency
         let keyword = if keyword.is_empty() { None } else { Some(keyword) };
@@ -330,9 +331,11 @@ impl ZedisServerState {
             ..Default::default()
         };
         value.data = Some(RedisValueData::Zset(Arc::new(new_zset)));
+        self.remember_value_filter_keyword_for_key(key.as_str(), cache_keyword);
 
         // Trigger load with the new filter
         self.load_more_zset_value(cx);
+        true
     }
     /// Loads the next batch of ZSET members using appropriate pagination strategy.
     ///
@@ -393,6 +396,16 @@ impl ZedisServerState {
             },
             // UI callback: merge results and handle auto-loading for filters
             move |this, result, cx| {
+                if this.key.as_ref() != Some(&key_clone) {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    tracing::debug!(
+                        expected_key = key_clone.as_str(),
+                        current_key = current_key.as_str(),
+                        "Skip stale zset value pagination result"
+                    );
+                    return;
+                }
+
                 let mut should_load_more = false;
 
                 if let Ok((new_cursor, new_values)) = result

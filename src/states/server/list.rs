@@ -78,20 +78,27 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
 }
 
 impl ZedisServerState {
-    pub fn filter_list_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some((_, value)) = self.try_get_mut_key_value() else {
-            return;
+    pub fn filter_list_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) -> bool {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return false;
         };
         let Some(list_value) = value.list_value() else {
-            return;
+            return false;
+        };
+        let filter_keyword = if keyword.is_empty() {
+            None
+        } else {
+            Some(keyword.clone())
         };
         let new_list_value = RedisListValue {
-            keyword: Some(keyword.clone()),
+            keyword: filter_keyword,
             size: list_value.size,
             values: list_value.values.clone(),
         };
         value.data = Some(RedisValueData::List(Arc::new(new_list_value)));
+        self.remember_value_filter_keyword_for_key(key.as_str(), keyword);
         cx.emit(ServerEvent::ValueUpdated(self.key.clone().unwrap_or_default()));
+        true
     }
     pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some((key, value)) = self.try_get_mut_key_value() else {

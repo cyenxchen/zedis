@@ -424,6 +424,7 @@ impl ZedisServerState {
                         this.value = None;
                     }
                 };
+                this.apply_cached_value_filter(cx);
                 cx.emit(ServerEvent::ValueLoaded(current_key));
                 cx.notify();
             },

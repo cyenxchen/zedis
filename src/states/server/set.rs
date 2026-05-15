@@ -195,24 +195,31 @@ impl ZedisServerState {
     /// # Arguments
     /// * `keyword` - The search keyword to filter members (will be wrapped with wildcards)
     /// * `cx` - GPUI context for UI updates
-    pub fn filter_set_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
-        let Some(value) = self.value.as_mut() else {
-            return;
+    pub fn filter_set_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) -> bool {
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return false;
         };
         let Some(set) = value.set_value() else {
-            return;
+            return false;
+        };
+        let filter_keyword = if keyword.is_empty() {
+            None
+        } else {
+            Some(keyword.clone())
         };
 
         // Create new SET state with filter keyword, reset cursor to start fresh scan
         let new_set = RedisSetValue {
-            keyword: Some(keyword.clone()),
+            keyword: filter_keyword,
             size: set.size,
             ..Default::default()
         };
         value.data = Some(RedisValueData::Set(Arc::new(new_set)));
+        self.remember_value_filter_keyword_for_key(key.as_str(), keyword);
 
         // Trigger load with the new filter
         self.load_more_set_value(cx);
+        true
     }
     /// Loads the next batch of SET members using cursor-based pagination.
     ///
@@ -257,6 +264,16 @@ impl ZedisServerState {
             },
             // UI callback: merge results and handle auto-loading for filters
             move |this, result, cx| {
+                if this.key.as_ref() != Some(&key_clone) {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    tracing::debug!(
+                        expected_key = key_clone.as_str(),
+                        current_key = current_key.as_str(),
+                        "Skip stale set value pagination result"
+                    );
+                    return;
+                }
+
                 let mut should_load_more = false;
 
                 if let Ok((new_cursor, new_values)) = result

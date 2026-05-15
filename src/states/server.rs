@@ -169,6 +169,11 @@ pub struct ZedisServerState {
     /// Preserves filter keywords when switching between servers
     server_keyword_cache: AHashMap<String, SharedString>,
 
+    // ===== Per-key value filter cache =====
+    /// Per-key value filter cache: (server_id:db:key) -> keyword
+    /// Preserves value-table searches when switching between keys.
+    value_filter_keyword_cache: AHashMap<String, SharedString>,
+
     /// Set of currently opened server IDs (shown in sidebar)
     opened_servers: AHashSet<SharedString>,
 }
@@ -344,6 +349,73 @@ impl ZedisServerState {
         Some((key, value))
     }
 
+    fn value_filter_cache_prefix_for(server_id: &str, db: usize) -> String {
+        format!("{server_id}:{db}:")
+    }
+
+    fn value_filter_cache_key_for(&self, key: &str) -> String {
+        format!(
+            "{}{key}",
+            Self::value_filter_cache_prefix_for(self.server_id.as_str(), self.db)
+        )
+    }
+
+    fn remember_value_filter_keyword_for_key(&mut self, key: &str, keyword: SharedString) {
+        let cache_key = self.value_filter_cache_key_for(key);
+        if keyword.is_empty() {
+            self.value_filter_keyword_cache.remove(&cache_key);
+            debug!(key, "Cleared cached value filter keyword");
+        } else {
+            let keyword_len = keyword.as_str().len();
+            self.value_filter_keyword_cache.insert(cache_key, keyword);
+            debug!(key, keyword_len, "Cached value filter keyword");
+        }
+    }
+
+    fn clear_value_filter_keywords_for_current_server(&mut self) -> usize {
+        let prefix = Self::value_filter_cache_prefix_for(self.server_id.as_str(), self.db);
+        let old_len = self.value_filter_keyword_cache.len();
+        self.value_filter_keyword_cache
+            .retain(|key, _| !key.starts_with(&prefix));
+        old_len.saturating_sub(self.value_filter_keyword_cache.len())
+    }
+
+    fn apply_cached_value_filter(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.key.as_ref().filter(|key| !key.is_empty()).cloned() else {
+            return;
+        };
+        let keyword = self.value_filter_keyword(key.as_str());
+        if keyword.is_empty() {
+            return;
+        }
+        let Some(key_type) = self.value.as_ref().map(|value| value.key_type()) else {
+            return;
+        };
+
+        debug!(
+            key = key.as_str(),
+            key_type = ?key_type,
+            keyword_len = keyword.as_str().len(),
+            "Applying cached value filter after key load"
+        );
+
+        match key_type {
+            KeyType::List => {
+                self.filter_list_value(keyword, cx);
+            }
+            KeyType::Set => {
+                self.filter_set_value(keyword, cx);
+            }
+            KeyType::Zset => {
+                self.filter_zset_value(keyword, cx);
+            }
+            KeyType::Hash => {
+                self.filter_hash_value(keyword, cx);
+            }
+            _ => {}
+        }
+    }
+
     // ===== Public accessor methods =====
 
     pub fn is_terminal(&self) -> bool {
@@ -477,6 +549,14 @@ impl ZedisServerState {
         &self.keyword
     }
 
+    /// Get the cached value-table search keyword for a key.
+    pub fn value_filter_keyword(&self, key: &str) -> SharedString {
+        self.value_filter_keyword_cache
+            .get(&self.value_filter_cache_key_for(key))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Get the map of all loaded keys and their types
     pub fn keys(&self) -> &AHashMap<SharedString, KeyType> {
         &self.keys
@@ -552,6 +632,8 @@ impl ZedisServerState {
         // Clear keyword cache for all databases of this server
         let prefix = format!("{}:", server_id);
         self.server_keyword_cache.retain(|key, _| !key.starts_with(&prefix));
+        self.value_filter_keyword_cache
+            .retain(|key, _| !key.starts_with(&prefix));
 
         if self.server_id.as_str() == server_id {
             self.server_id = SharedString::default();
@@ -772,12 +854,37 @@ impl ZedisServerState {
         }
         let server_id = self.server_id.clone();
         let db = self.db;
+        let cleared_filters = self.clear_value_filter_keywords_for_current_server();
+        debug!(
+            server_id = server_id.as_str(),
+            db, cleared_filters, "Cleared cached value filters before reconnect"
+        );
 
         // Reset current state to force reconnection
         self.reset();
 
         // Re-select the same server
         self.select(server_id, db, preset_credentials, cx);
+    }
+
+    /// Refresh keys and clear cached value filters for the current server/db.
+    pub fn refresh_keys(&mut self, keyword: SharedString, cx: &mut Context<Self>) {
+        let current_key = self.key.clone();
+        let cleared_filters = self.clear_value_filter_keywords_for_current_server();
+        debug!(
+            server_id = self.server_id.as_str(),
+            db = self.db,
+            cleared_filters,
+            "Refreshing keys and clearing cached value filters"
+        );
+
+        if cleared_filters != 0
+            && let Some(key) = current_key.filter(|key| !key.is_empty())
+        {
+            self.select_key(key, cx);
+        }
+
+        self.handle_filter(keyword, cx);
     }
 
     // ===== Protobuf schema operations =====

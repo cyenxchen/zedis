@@ -97,8 +97,8 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     loading: bool,
     /// Last content width used to calculate table column widths.
     content_width: f32,
-    /// Flag indicating the selected key has changed (triggers input reset)
-    key_changed: bool,
+    /// Keyword that should be restored into the search input after key changes.
+    pending_keyword: Option<SharedString>,
     /// Event subscriptions for server state and input changes
     _subscriptions: Vec<Subscription>,
 }
@@ -230,9 +230,10 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                         state.delegate_mut().set_fetcher(fetcher);
                     });
                 }
-                // Clear search when key selection changes
-                ServerEvent::KeySelected(_) => {
-                    this.key_changed = true;
+                // Restore per-key search when key selection changes
+                ServerEvent::KeySelected(key) => {
+                    let keyword = server_state.read(cx).value_filter_keyword(key.as_str());
+                    this.pending_keyword = Some(keyword);
                 }
                 _ => {}
             }
@@ -244,6 +245,18 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .clean_on_escape()
                 .placeholder(i18n_common(cx, "keyword_placeholder"))
         });
+        let initial_keyword = {
+            let state = server_state.read(cx);
+            state
+                .key()
+                .map(|key| state.value_filter_keyword(key.as_str()))
+                .unwrap_or_default()
+        };
+        if !initial_keyword.is_empty() {
+            keyword_state.update(cx, |state, cx| {
+                state.set_value(initial_keyword, window, cx);
+            });
+        }
 
         // Subscribe to input events to trigger search on Enter
         subscriptions.push(cx.subscribe(&keyword_state, |this, _, event, cx| {
@@ -277,18 +290,27 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             done,
             loading: false,
             content_width,
-            key_changed: false,
+            pending_keyword: None,
             _subscriptions: subscriptions,
         }
     }
 
     /// Triggers a filter operation using the current keyword from the input field.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
+        if self.loading {
+            debug!("Skip key value table filter because a previous filter is still loading");
+            return;
+        }
+
         let keyword = self.keyword_state.read(cx).value();
         self.loading = true;
-        self.table_state.update(cx, |state, cx| {
-            state.delegate().fetcher().filter(keyword, cx);
-        });
+        let accepted = self
+            .table_state
+            .update(cx, |state, cx| state.delegate().fetcher().filter(keyword, cx));
+        if !accepted {
+            self.loading = false;
+            debug!("Skip key value table filter because the current value is busy");
+        }
     }
 
     /// Focuses the keyword search input field.
@@ -302,12 +324,13 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text_color = cx.theme().muted_foreground;
 
-        // Clear search input when key changes
-        if self.key_changed {
+        // Sync search input with the selected key's cached keyword.
+        if let Some(keyword) = self.pending_keyword.take()
+            && self.keyword_state.read(cx).value() != keyword
+        {
             self.keyword_state.update(cx, |input, cx| {
-                input.set_value(SharedString::default(), window, cx);
+                input.set_value(keyword, window, cx);
             });
-            self.key_changed = false;
         }
 
         // Handler for adding new values

@@ -145,10 +145,9 @@ impl ZedisKvFetcher for ZedisListValues {
     }
 
     /// Applies a keyword filter to the list values.
-    fn filter(&self, keyword: SharedString, cx: &mut App) {
-        self.server_state.update(cx, |state, cx| {
-            state.filter_list_value(keyword, cx);
-        });
+    fn filter(&self, keyword: SharedString, cx: &mut App) -> bool {
+        self.server_state
+            .update(cx, |state, cx| state.filter_list_value(keyword, cx))
     }
     /// Opens a dialog to add a new value to the Redis list.
     ///

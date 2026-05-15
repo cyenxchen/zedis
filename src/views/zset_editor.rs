@@ -117,10 +117,9 @@ impl ZedisKvFetcher for ZedisZsetValues {
     /// Applies a filter to ZSET members by pattern matching.
     ///
     /// Resets the scan and loads members matching the keyword pattern.
-    fn filter(&self, keyword: SharedString, cx: &mut App) {
-        self.server_state.update(cx, |this, cx| {
-            this.filter_zset_value(keyword, cx);
-        });
+    fn filter(&self, keyword: SharedString, cx: &mut App) -> bool {
+        self.server_state
+            .update(cx, |this, cx| this.filter_zset_value(keyword, cx))
     }
 
     /// Opens a dialog to add a new member to the ZSET.

@@ -21,7 +21,7 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use gpui::{
-    App, AppContext, Corner, Entity, Focusable, FocusHandle, Hsla, MouseButton, ScrollStrategy, SharedString,
+    App, AppContext, Corner, Entity, FocusHandle, Focusable, Hsla, MouseButton, ScrollStrategy, SharedString,
     Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use gpui_component::IndexPath;
@@ -595,6 +595,20 @@ impl ZedisKeyTree {
         });
     }
 
+    /// Handle explicit refresh action and clear per-key value searches.
+    fn handle_refresh(&mut self, cx: &mut Context<Self>) {
+        // Don't trigger refresh while already scanning
+        if self.server_state.read(cx).scaning() {
+            return;
+        }
+
+        let keyword = self.keyword_state.read(cx).value();
+        self.state.keyword = keyword.clone();
+        self.server_state.update(cx, move |handle, cx| {
+            handle.refresh_keys(keyword, cx);
+        });
+    }
+
     fn handle_add_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let category_list = ["String", "List", "Set", "Zset", "Hash"];
         let fields = vec![
@@ -1000,7 +1014,7 @@ impl ZedisKeyTree {
             .disabled(scaning)
             .icon(CustomIconName::RotateCw)
             .on_click(cx.listener(|this, _, _, cx| {
-                this.handle_filter(cx);
+                this.handle_refresh(cx);
             }));
         h_flex()
             .p_2()

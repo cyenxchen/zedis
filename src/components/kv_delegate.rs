@@ -67,7 +67,7 @@ pub trait ZedisKvFetcher: 'static {
     fn remove(&self, index: usize, _cx: &mut App);
 
     /// Filters data based on a keyword.
-    fn filter(&self, keyword: SharedString, _cx: &mut App);
+    fn filter(&self, keyword: SharedString, _cx: &mut App) -> bool;
 
     /// Opens a dialog to add a new value.
     fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
