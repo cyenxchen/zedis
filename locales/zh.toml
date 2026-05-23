@@ -59,6 +59,8 @@ score_placeholder = "输入分数 (默认: 0.0)"
 
 remove_tooltip = "移除项"
 remove_item_prompt = "确定要删除此项 (行号 %{row}) 吗？"
+remove_selected_items = "移除选中项 (%{count})"
+remove_items_prompt = "确定要删除选中的 %{count} 项吗？"
 update_tooltip = "更新项"
 
 [sidebar]

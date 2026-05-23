@@ -226,8 +226,14 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                     this.done = fetcher.is_done();
                     this.items_count = fetcher.rows_count();
                     this.total_count = fetcher.count();
-                    this.table_state.update(cx, |state, _| {
+                    this.table_state.update(cx, |state, cx| {
                         state.delegate_mut().set_fetcher(fetcher);
+                        if matches!(
+                            event,
+                            ServerEvent::ValueLoaded(_) | ServerEvent::ValueAdded(_) | ServerEvent::ValueUpdated(_)
+                        ) {
+                            state.clear_selection(cx);
+                        }
                     });
                 }
                 // Restore per-key search when key selection changes

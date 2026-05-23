@@ -33,11 +33,22 @@ use crate::{
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::sync::Arc;
+use tracing::{debug, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Type alias for HSCAN result: (cursor, vec of (field, value) pairs as bytes)
 type HashScanValue = (u64, Vec<(Vec<u8>, Vec<u8>)>);
+
+fn unique_hash_fields(fields: Vec<SharedString>) -> Vec<SharedString> {
+    let mut unique = Vec::with_capacity(fields.len());
+    for field in fields {
+        if !unique.contains(&field) {
+            unique.push(field);
+        }
+    }
+    unique
+}
 
 /// Retrieves HASH field-value pairs using Redis HSCAN command for cursor-based pagination.
 ///
@@ -326,6 +337,72 @@ impl ZedisServerState {
             cx,
         );
     }
+
+    pub fn remove_hash_values(&mut self, remove_fields: Vec<SharedString>, cx: &mut Context<Self>) {
+        let remove_fields = unique_hash_fields(remove_fields);
+        if remove_fields.is_empty() {
+            debug!("Skip batch hash removal because no fields were selected");
+            return;
+        }
+        if remove_fields.len() == 1 {
+            self.remove_hash_value(remove_fields[0].clone(), cx);
+            return;
+        }
+
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+
+        value.status = RedisValueStatus::Loading;
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_clone = key.clone();
+        let fields_for_task = remove_fields.clone();
+        info!(
+            key = %key,
+            count = remove_fields.len(),
+            "Removing multiple Redis hash fields"
+        );
+
+        self.spawn(
+            ServerTask::RemoveHashValues,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let mut binding = cmd("HDEL");
+                binding.arg(key.as_str());
+                for field in &fields_for_task {
+                    binding.arg(field.as_str());
+                }
+                let count: usize = binding.query_async(&mut conn).await?;
+                Ok(count)
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    if let Ok(count) = result {
+                        if count != 0
+                            && let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut()
+                        {
+                            let hash = Arc::make_mut(hash_data);
+                            hash.values.retain(|(field, _)| !remove_fields.contains(field));
+                            hash.size = hash.size.saturating_sub(count);
+                            info!(
+                                key = %key_clone,
+                                removed = count,
+                                "Removed multiple Redis hash fields"
+                            );
+                        }
+                        cx.emit(ServerEvent::ValueUpdated(key_clone));
+                    }
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     /// Loads the next batch of HASH field-value pairs using cursor-based pagination.
     ///
     /// Uses HSCAN to incrementally load field-value pairs without blocking on large HASHes.
@@ -410,6 +487,26 @@ impl ZedisServerState {
                 }
             },
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unique_hash_fields;
+    use gpui::SharedString;
+
+    #[test]
+    fn keeps_hash_fields_unique_for_batch_removal() {
+        let fields = vec![
+            SharedString::from("a"),
+            SharedString::from("b"),
+            SharedString::from("a"),
+        ];
+
+        assert_eq!(
+            unique_hash_fields(fields),
+            vec![SharedString::from("a"), SharedString::from("b")]
         );
     }
 }

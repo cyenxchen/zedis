@@ -72,6 +72,7 @@ pub trait TableDelegate: Sized + 'static {
     fn context_menu(
         &mut self,
         row_ix: usize,
+        selected_rows: Vec<usize>,
         menu: PopupMenu,
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,

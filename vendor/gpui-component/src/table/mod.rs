@@ -16,7 +16,7 @@ pub use column::*;
 pub use delegate::*;
 pub use state::*;
 
-actions!(table, [SelectPrevColumn, SelectNextColumn]);
+actions!(table, [SelectAll, SelectPrevColumn, SelectNextColumn]);
 
 const CONTEXT: &'static str = "Table";
 pub(crate) fn init(cx: &mut App) {
@@ -26,6 +26,10 @@ pub(crate) fn init(cx: &mut App) {
         KeyBinding::new("down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("left", SelectPrevColumn, Some(CONTEXT)),
         KeyBinding::new("right", SelectNextColumn, Some(CONTEXT)),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-a", SelectAll, Some(CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-a", SelectAll, Some(CONTEXT)),
     ]);
 }
 
@@ -123,6 +127,7 @@ where
             .on_action(window.listener_for(&self.state, TableState::action_select_prev))
             .on_action(window.listener_for(&self.state, TableState::action_select_next_col))
             .on_action(window.listener_for(&self.state, TableState::action_select_prev_col))
+            .on_action(window.listener_for(&self.state, TableState::action_select_all))
             .bg(cx.theme().table)
             .when(bordered, |this| {
                 this.rounded(cx.theme().radius)

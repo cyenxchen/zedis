@@ -60,6 +60,8 @@ score_placeholder = "Enter score (default: 0.0)"
 
 remove_tooltip = "Remove item"
 remove_item_prompt = "Are you sure you want to delete this item (Row %{row})?"
+remove_selected_items = "Remove selected items (%{count})"
+remove_items_prompt = "Are you sure you want to delete %{count} selected items?"
 update_tooltip = "Update item"
 
 [sidebar]

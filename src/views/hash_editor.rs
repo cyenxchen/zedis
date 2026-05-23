@@ -115,6 +115,30 @@ impl ZedisKvFetcher for ZedisHashValues {
         });
     }
 
+    fn can_remove_many(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, indexes: Vec<usize>, cx: &mut App) {
+        let Some(hash) = self.value.hash_value() else {
+            return;
+        };
+
+        let mut fields = Vec::with_capacity(indexes.len());
+        for index in indexes {
+            let Some((field, _)) = hash.values.get(index) else {
+                continue;
+            };
+            if !fields.contains(field) {
+                fields.push(field.clone());
+            }
+        }
+
+        self.server_state.update(cx, |this, cx| {
+            this.remove_hash_values(fields, cx);
+        });
+    }
+
     /// Applies a filter to HASH fields by pattern matching.
     ///
     /// Resets the scan and loads fields matching the keyword pattern.

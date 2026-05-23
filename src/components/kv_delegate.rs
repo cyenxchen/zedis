@@ -22,6 +22,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     label::Label,
+    menu::{PopupMenu, PopupMenuItem},
     table::{Column, TableDelegate, TableState},
 };
 use rust_i18n::t;
@@ -65,6 +66,18 @@ pub trait ZedisKvFetcher: 'static {
 
     /// Removes an item at the specified index.
     fn remove(&self, index: usize, _cx: &mut App);
+
+    /// Returns whether multiple visible rows can be removed in one operation.
+    fn can_remove_many(&self) -> bool {
+        false
+    }
+
+    /// Removes multiple items at the specified visible indices.
+    fn remove_many(&self, indexes: Vec<usize>, cx: &mut App) {
+        for index in indexes {
+            self.remove(index, cx);
+        }
+    }
 
     /// Filters data based on a keyword.
     fn filter(&self, keyword: SharedString, _cx: &mut App) -> bool;
@@ -474,5 +487,66 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
         }
 
         self.fetcher.load_more(window, cx);
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        selected_rows: Vec<usize>,
+        menu: PopupMenu,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let mut rows = if self.fetcher.can_remove_many() && selected_rows.len() > 1 {
+            selected_rows
+        } else {
+            vec![row_ix]
+        };
+        rows.sort_unstable();
+        rows.dedup();
+
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let label = if rows.len() > 1 {
+            t!("common.remove_selected_items", count = rows.len(), locale = locale).to_string()
+        } else {
+            t!("common.remove", locale = locale).to_string()
+        };
+        let processing = self.processing.clone();
+        let fetcher = self.fetcher.clone();
+
+        menu.item(
+            PopupMenuItem::new(label)
+                .icon(Icon::new(CustomIconName::FileXCorner))
+                .disabled(processing.get())
+                .on_click(move |_, window, cx| {
+                    let rows = rows.clone();
+                    let processing = processing.clone();
+                    let fetcher = fetcher.clone();
+
+                    window.open_dialog(cx, move |dialog, _, cx| {
+                        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+                        let message = if rows.len() > 1 {
+                            t!("common.remove_items_prompt", count = rows.len(), locale = locale).to_string()
+                        } else {
+                            t!("common.remove_item_prompt", row = rows[0] + 1, locale = locale).to_string()
+                        };
+
+                        let rows = rows.clone();
+                        let processing = processing.clone();
+                        let fetcher = fetcher.clone();
+
+                        dialog.confirm().child(message).on_ok(move |_, window, cx| {
+                            processing.replace(true);
+                            if rows.len() > 1 {
+                                fetcher.remove_many(rows.clone(), cx);
+                            } else if let Some(row) = rows.first() {
+                                fetcher.remove(*row, cx);
+                            }
+                            window.close_dialog(cx);
+                            true
+                        })
+                    });
+                }),
+        )
     }
 }

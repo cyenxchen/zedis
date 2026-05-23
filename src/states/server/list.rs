@@ -26,9 +26,32 @@ use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::{cmd, pipe};
 use std::sync::Arc;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+const REMOVE_LIST_VALUES_SCRIPT: &str = r#"
+local key = KEYS[1]
+local len = redis.call('LLEN', key)
+for i = 1, #ARGV, 2 do
+    local index = tonumber(ARGV[i])
+    if index == nil or index < 0 or index >= len then
+        return redis.error_reply('list index out of range: ' .. tostring(ARGV[i]))
+    end
+end
+for i = 1, #ARGV, 2 do
+    redis.call('LSET', key, tonumber(ARGV[i]), ARGV[i + 1])
+    redis.call('LREM', key, 1, ARGV[i + 1])
+end
+return #ARGV / 2
+"#;
+
+fn normalized_remove_indexes(mut indexes: Vec<usize>) -> Vec<usize> {
+    indexes.sort_unstable_by(|a, b| b.cmp(a));
+    indexes.dedup();
+    indexes
+}
 
 /// Convert bytes to display string, handling compressed data.
 ///
@@ -150,6 +173,77 @@ impl ZedisServerState {
             cx,
         );
     }
+
+    pub fn remove_list_values(&mut self, indexes: Vec<usize>, cx: &mut Context<Self>) {
+        let indexes = normalized_remove_indexes(indexes);
+        if indexes.is_empty() {
+            debug!("Skip batch list removal because no indexes were selected");
+            return;
+        }
+        if indexes.len() == 1 {
+            self.remove_list_value(indexes[0], cx);
+            return;
+        }
+
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return;
+        };
+        value.status = RedisValueStatus::Updating;
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_clone = key.clone();
+        let indexes_for_task = indexes.clone();
+        info!(
+            key = %key,
+            count = indexes.len(),
+            "Removing multiple Redis list values"
+        );
+
+        self.spawn(
+            ServerTask::RemoveListValues,
+            move || async move {
+                let markers = indexes_for_task
+                    .iter()
+                    .map(|_| Uuid::new_v4().to_string())
+                    .collect::<Vec<_>>();
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let mut binding = cmd("EVAL");
+                binding.arg(REMOVE_LIST_VALUES_SCRIPT).arg(1).arg(key.as_str());
+                for (index, marker) in indexes_for_task.iter().zip(markers.iter()) {
+                    binding.arg(*index).arg(marker);
+                }
+                let removed: usize = binding.query_async(&mut conn).await?;
+                Ok(removed)
+            },
+            move |this, result, cx| {
+                if let Some(value) = this.value.as_mut() {
+                    if let Ok(removed) = result
+                        && let Some(RedisValueData::List(list_data)) = value.data.as_mut()
+                    {
+                        let list = Arc::make_mut(list_data);
+                        list.size = list.size.saturating_sub(removed);
+                        for index in &indexes {
+                            if *index < list.values.len() {
+                                list.values.remove(*index);
+                            }
+                        }
+                        info!(
+                            key = %key_clone,
+                            removed,
+                            "Removed multiple Redis list values"
+                        );
+                        cx.emit(ServerEvent::ValueUpdated(key_clone));
+                    }
+                    value.status = RedisValueStatus::Idle;
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
     pub fn push_list_value(&mut self, new_value: SharedString, mode: SharedString, cx: &mut Context<Self>) {
         let Some((key, value)) = self.try_get_mut_key_value() else {
             return;
@@ -455,5 +549,15 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_remove_indexes;
+
+    #[test]
+    fn normalizes_batch_remove_indexes_descending_and_unique() {
+        assert_eq!(normalized_remove_indexes(vec![3, 1, 3, 2]), vec![3, 2, 1]);
     }
 }

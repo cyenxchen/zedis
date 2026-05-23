@@ -144,6 +144,28 @@ impl ZedisKvFetcher for ZedisListValues {
         });
     }
 
+    fn can_remove_many(&self) -> bool {
+        true
+    }
+
+    fn remove_many(&self, indexes: Vec<usize>, cx: &mut App) {
+        let mut real_indexes = indexes
+            .into_iter()
+            .filter_map(|index| {
+                self.visible_item_indexes
+                    .as_ref()
+                    .map(|indexes| indexes.get(index).copied())
+                    .unwrap_or(Some(index))
+            })
+            .collect::<Vec<_>>();
+        real_indexes.sort_unstable();
+        real_indexes.dedup();
+
+        self.server_state.update(cx, |state, cx| {
+            state.remove_list_values(real_indexes, cx);
+        });
+    }
+
     /// Applies a keyword filter to the list values.
     fn filter(&self, keyword: SharedString, cx: &mut App) -> bool {
         self.server_state

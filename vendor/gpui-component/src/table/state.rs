@@ -1,4 +1,4 @@
-use std::{ops::Range, rc::Rc, time::Duration};
+use std::{collections::BTreeSet, ops::Range, rc::Rc, time::Duration};
 
 use crate::{
     ActiveTheme, Icon, IconName, StyleSized as _, StyledExt, VirtualListScrollHandle,
@@ -98,6 +98,8 @@ pub struct TableState<D: TableDelegate> {
     pub horizontal_scroll_handle: VirtualListScrollHandle,
 
     selected_row: Option<usize>,
+    selected_rows: BTreeSet<usize>,
+    selection_anchor_row: Option<usize>,
     selection_state: SelectionState,
     right_clicked_row: Option<usize>,
     selected_col: Option<usize>,
@@ -127,6 +129,8 @@ where
             vertical_scroll_handle: UniformListScrollHandle::new(),
             selection_state: SelectionState::Row,
             selected_row: None,
+            selected_rows: BTreeSet::new(),
+            selection_anchor_row: None,
             right_clicked_row: None,
             selected_col: None,
             resizing_col: None,
@@ -220,6 +224,11 @@ where
         self.selected_row
     }
 
+    /// Returns all selected row indices.
+    pub fn selected_rows(&self) -> Vec<usize> {
+        self.selected_rows.iter().copied().collect()
+    }
+
     /// Sets the selected row to the given index.
     pub fn set_selected_row(&mut self, row_ix: usize, cx: &mut Context<Self>) {
         let is_down = match self.selected_row {
@@ -230,6 +239,9 @@ where
         self.selection_state = SelectionState::Row;
         self.right_clicked_row = None;
         self.selected_row = Some(row_ix);
+        self.selected_rows.clear();
+        self.selected_rows.insert(row_ix);
+        self.selection_anchor_row = Some(row_ix);
         if let Some(row_ix) = self.selected_row {
             self.vertical_scroll_handle.scroll_to_item(
                 row_ix,
@@ -244,6 +256,22 @@ where
         cx.notify();
     }
 
+    /// Selects an inclusive row range from the current anchor row.
+    pub fn set_selected_row_range(&mut self, row_ix: usize, cx: &mut Context<Self>) {
+        let anchor_row = self.selection_anchor_row.unwrap_or_else(|| self.selected_row.unwrap_or(row_ix));
+        let start = anchor_row.min(row_ix);
+        let end = anchor_row.max(row_ix);
+
+        self.selection_state = SelectionState::Row;
+        self.right_clicked_row = None;
+        self.selected_row = Some(row_ix);
+        self.selected_rows = (start..=end).collect();
+        self.vertical_scroll_handle
+            .scroll_to_item(row_ix, ScrollStrategy::Bottom);
+        cx.emit(TableEvent::SelectRow(row_ix));
+        cx.notify();
+    }
+
     /// Returns the selected column index.
     pub fn selected_col(&self) -> Option<usize> {
         self.selected_col
@@ -253,6 +281,8 @@ where
     pub fn set_selected_col(&mut self, col_ix: usize, cx: &mut Context<Self>) {
         self.selection_state = SelectionState::Column;
         self.selected_col = Some(col_ix);
+        self.selected_rows.clear();
+        self.selection_anchor_row = None;
         if let Some(col_ix) = self.selected_col {
             self.scroll_to_col(col_ix, cx);
         }
@@ -264,6 +294,8 @@ where
     pub fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.selection_state = SelectionState::Row;
         self.selected_row = None;
+        self.selected_rows.clear();
+        self.selection_anchor_row = None;
         self.selected_col = None;
         cx.notify();
     }
@@ -304,9 +336,10 @@ where
         &mut self,
         _: &MouseDownEvent,
         row_ix: usize,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) {
+        self.focus_handle.focus(window);
         self.right_clicked_row = Some(row_ix);
     }
 
@@ -314,14 +347,28 @@ where
         &mut self,
         e: &ClickEvent,
         row_ix: usize,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.set_selected_row(row_ix, cx);
+        self.focus_handle.focus(window);
+
+        if e.modifiers().shift {
+            self.set_selected_row_range(row_ix, cx);
+        } else {
+            self.set_selected_row(row_ix, cx);
+        }
 
         if e.click_count() == 2 {
             cx.emit(TableEvent::DoubleClickedRow(row_ix));
         }
+    }
+
+    fn context_menu_rows(&self, row_ix: usize) -> Vec<usize> {
+        if self.selected_rows.len() > 1 && self.selected_rows.contains(&row_ix) {
+            return self.selected_rows();
+        }
+
+        vec![row_ix]
     }
 
     fn on_col_head_click(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<Self>) {
@@ -341,7 +388,7 @@ where
     }
 
     fn has_selection(&self) -> bool {
-        self.selected_row.is_some() || self.selected_col.is_some()
+        !self.selected_rows.is_empty() || self.selected_row.is_some() || self.selected_col.is_some()
     }
 
     pub(super) fn action_cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
@@ -435,6 +482,24 @@ where
         }
 
         self.set_selected_col(selected_col, cx);
+    }
+
+    pub(super) fn action_select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
+        let rows_count = self.delegate.rows_count(cx);
+        if rows_count == 0 {
+            return;
+        }
+
+        self.selection_state = SelectionState::Row;
+        self.right_clicked_row = None;
+        self.selected_col = None;
+        self.selected_row = Some(rows_count - 1);
+        self.selection_anchor_row = Some(0);
+        self.selected_rows = (0..rows_count).collect();
+        self.vertical_scroll_handle
+            .scroll_to_item(rows_count - 1, ScrollStrategy::Bottom);
+        cx.emit(TableEvent::SelectRow(rows_count - 1));
+        cx.notify();
     }
 
     /// Scroll table when mouse position is near the edge of the table bounds.
@@ -972,7 +1037,7 @@ where
     ) -> Stateful<Div> {
         let horizontal_scroll_handle = self.horizontal_scroll_handle.clone();
         let is_stripe_row = self.options.stripe && row_ix % 2 != 0;
-        let is_selected = self.selected_row == Some(row_ix);
+        let is_selected = self.selected_rows.contains(&row_ix) || self.selected_row == Some(row_ix);
         let view = cx.entity().clone();
         let row_height = self.options.size.table_row_height();
 
@@ -1308,8 +1373,10 @@ where
                 let view = cx.entity().clone();
                 move |this, window: &mut Window, cx: &mut Context<PopupMenu>| {
                     if let Some(row_ix) = view.read(cx).right_clicked_row {
+                        let selected_rows = view.read(cx).context_menu_rows(row_ix);
                         view.update(cx, |menu, cx| {
-                            menu.delegate_mut().context_menu(row_ix, this, window, cx)
+                            menu.delegate_mut()
+                                .context_menu(row_ix, selected_rows, this, window, cx)
                         })
                     } else {
                         this

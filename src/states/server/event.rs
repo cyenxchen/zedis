@@ -69,6 +69,9 @@ pub enum ServerTask {
     /// Delete an item from a list
     RemoveListValue,
 
+    /// Delete multiple items from a list
+    RemoveListValues,
+
     /// Update a value in a list
     UpdateListValue,
 
@@ -90,6 +93,9 @@ pub enum ServerTask {
 
     /// Remove a value from a hash
     RemoveHashValue,
+
+    /// Remove multiple values from a hash
+    RemoveHashValues,
 
     /// Save edited value back to Redis
     SaveValue,
@@ -122,6 +128,7 @@ impl ServerTask {
             ServerTask::UpdateKeyTtl => "update_key_ttl",
             ServerTask::RenameKey => "rename_key",
             ServerTask::RemoveListValue => "remove_list_value",
+            ServerTask::RemoveListValues => "remove_list_values",
             ServerTask::UpdateListValue => "update_list_value",
             ServerTask::LoadMoreValue => "load_more_value",
             ServerTask::SaveValue => "save_value",
@@ -133,6 +140,7 @@ impl ServerTask {
             ServerTask::AddZsetValue => "add_zset_value",
             ServerTask::RemoveZsetValue => "remove_zset_value",
             ServerTask::RemoveHashValue => "remove_hash_value",
+            ServerTask::RemoveHashValues => "remove_hash_values",
             ServerTask::DuplicateKey => "duplicate_key",
             ServerTask::ExportKeys => "export_keys",
             ServerTask::ImportKeys => "import_keys",
