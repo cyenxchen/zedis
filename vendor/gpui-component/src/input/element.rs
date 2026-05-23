@@ -7,6 +7,7 @@ use gpui::{
 };
 use ropey::Rope;
 use smallvec::SmallVec;
+use tracing::debug;
 
 use crate::{
     ActiveTheme as _, Colorize, PixelsExt, Root,
@@ -18,6 +19,27 @@ use super::{InputState, LastLayout, mode::InputMode};
 const BOTTOM_MARGIN_ROWS: usize = 3;
 pub(super) const RIGHT_MARGIN: Pixels = px(10.);
 pub(super) const LINE_NUMBER_RIGHT_MARGIN: Pixels = px(10.);
+
+fn line_selection_range(
+    selection_start: usize,
+    selection_end: usize,
+    line_start: usize,
+    line_len: usize,
+) -> Option<Range<usize>> {
+    let line_end = line_start + line_len;
+    if selection_end <= line_start || selection_start > line_end {
+        return None;
+    }
+
+    Some(
+        selection_start.saturating_sub(line_start).min(line_len)
+            ..selection_end.saturating_sub(line_start).min(line_len),
+    )
+}
+
+fn selection_ends_on_line(selection_end: usize, line_start: usize, line_len: usize) -> bool {
+    selection_end <= line_start + line_len
+}
 
 pub(super) struct TextElement {
     pub(crate) state: Entity<InputState>,
@@ -260,21 +282,19 @@ impl TextElement {
 
         for (ix, line) in lines.iter().enumerate() {
             let prev_lines_offset = *last_layout.visible_row_offsets.get(ix)?;
-            let line_end_offset = prev_lines_offset + line.len();
-            if end_ix <= prev_lines_offset || start_ix > line_end_offset {
+            let Some(line_selection_range) = line_selection_range(start_ix, end_ix, prev_lines_offset, line.len())
+            else {
                 offset_y += line.size(line_height).height;
                 continue;
-            }
+            };
 
             let line_size = line.size(line_height);
             let line_wrap_width = line_size.width;
 
             let line_origin = point(px(0.), offset_y);
 
-            let line_cursor_start =
-                line.position_for_index(start_ix.saturating_sub(prev_lines_offset).min(line.len()), line_height);
-            let line_cursor_end =
-                line.position_for_index(end_ix.saturating_sub(prev_lines_offset).min(line.len()), line_height);
+            let line_cursor_start = line.position_for_index(line_selection_range.start, line_height);
+            let line_cursor_end = line.position_for_index(line_selection_range.end, line_height);
 
             if line_cursor_start.is_some() || line_cursor_end.is_some() {
                 let start = line_cursor_start.unwrap_or_else(|| line.position_for_index(0, line_height).unwrap());
@@ -314,9 +334,16 @@ impl TextElement {
                         bottom_right: line_origin + point(end.x, start.y + line_height),
                     });
                 }
+            } else {
+                debug!(
+                    "Failed to layout input selection range: selection={:?}, line_start={}, line_len={}",
+                    range,
+                    prev_lines_offset,
+                    line.len()
+                );
             }
 
-            if line_cursor_start.is_some() && line_cursor_end.is_some() {
+            if selection_ends_on_line(end_ix, prev_lines_offset, line.len()) {
                 break;
             }
 
@@ -1569,6 +1596,20 @@ fn split_runs_by_bg_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_line_selection_range_spans_multiple_lines() {
+        let selection = 3..14;
+
+        assert_eq!(line_selection_range(selection.start, selection.end, 0, 5), Some(3..5));
+        assert_eq!(line_selection_range(selection.start, selection.end, 6, 4), Some(0..4));
+        assert_eq!(line_selection_range(selection.start, selection.end, 11, 4), Some(0..3));
+        assert_eq!(line_selection_range(selection.start, selection.end, 16, 4), None);
+
+        assert!(!selection_ends_on_line(selection.end, 0, 5));
+        assert!(!selection_ends_on_line(selection.end, 6, 4));
+        assert!(selection_ends_on_line(selection.end, 11, 4));
+    }
 
     #[test]
     fn test_runs_for_range() {
