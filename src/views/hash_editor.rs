@@ -147,6 +147,10 @@ impl ZedisKvFetcher for ZedisHashValues {
             .update(cx, |this, cx| this.filter_hash_value(keyword, cx))
     }
 
+    fn filter_on_input_change() -> bool {
+        true
+    }
+
     /// Handles inline editing of a HASH field's value.
     ///
     /// Called when the user edits the value column directly in the table.

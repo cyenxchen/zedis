@@ -95,6 +95,12 @@ pub struct ZedisKvTable<T: ZedisKvFetcher> {
     done: bool,
     /// Whether a filter operation is in progress
     loading: bool,
+    /// Keyword currently applied to the table data.
+    active_keyword: SharedString,
+    /// Latest keyword typed while a filter operation is still loading.
+    queued_keyword: Option<SharedString>,
+    /// Suppresses dynamic filtering while syncing cached keywords into the input.
+    suppress_input_filter: bool,
     /// Last content width used to calculate table column widths.
     content_width: f32,
     /// Keyword that should be restored into the search input after key changes.
@@ -222,6 +228,7 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 | ServerEvent::ValueAdded(_)
                 | ServerEvent::ValueUpdated(_) => {
                     let fetcher = Self::new_values(server_state.clone(), cx);
+                    let was_loading = this.loading;
                     this.loading = false;
                     this.done = fetcher.is_done();
                     this.items_count = fetcher.rows_count();
@@ -235,6 +242,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                             state.clear_selection(cx);
                         }
                     });
+                    if was_loading {
+                        this.run_queued_filter(cx);
+                    }
                 }
                 // Restore per-key search when key selection changes
                 ServerEvent::KeySelected(key) => {
@@ -259,16 +269,21 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
                 .unwrap_or_default()
         };
         if !initial_keyword.is_empty() {
+            let keyword = initial_keyword.clone();
             keyword_state.update(cx, |state, cx| {
-                state.set_value(initial_keyword, window, cx);
+                state.set_value(keyword, window, cx);
             });
         }
 
-        // Subscribe to input events to trigger search on Enter
-        subscriptions.push(cx.subscribe(&keyword_state, |this, _, event, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
+        // Subscribe to input events to trigger search on Enter, or dynamically for supported value types.
+        subscriptions.push(cx.subscribe(&keyword_state, |this, _, event, cx| match event {
+            InputEvent::PressEnter { .. } => {
                 this.handle_filter(cx);
             }
+            InputEvent::Change if T::filter_on_input_change() && !this.suppress_input_filter => {
+                this.handle_dynamic_filter(cx);
+            }
+            _ => {}
         }));
 
         // Initialize table data and state
@@ -295,6 +310,9 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
             total_count,
             done,
             loading: false,
+            active_keyword: initial_keyword,
+            queued_keyword: None,
+            suppress_input_filter: false,
             content_width,
             pending_keyword: None,
             _subscriptions: subscriptions,
@@ -303,20 +321,66 @@ impl<T: ZedisKvFetcher> ZedisKvTable<T> {
 
     /// Triggers a filter operation using the current keyword from the input field.
     fn handle_filter(&mut self, cx: &mut Context<Self>) {
-        if self.loading {
-            debug!("Skip key value table filter because a previous filter is still loading");
+        let keyword = self.keyword_state.read(cx).value();
+        self.apply_filter(keyword, true, false, cx);
+    }
+
+    fn handle_dynamic_filter(&mut self, cx: &mut Context<Self>) {
+        let keyword = self.keyword_state.read(cx).value();
+        self.apply_filter(keyword, true, true, cx);
+    }
+
+    fn apply_filter(
+        &mut self,
+        keyword: SharedString,
+        queue_if_loading: bool,
+        skip_unchanged: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if skip_unchanged && keyword == self.active_keyword {
+            self.queued_keyword = None;
+            debug!("Skip dynamic key value table filter because keyword is unchanged");
             return;
         }
 
-        let keyword = self.keyword_state.read(cx).value();
+        if self.loading {
+            if queue_if_loading {
+                let keyword_len = keyword.as_str().len();
+                self.queued_keyword = Some(keyword);
+                debug!(
+                    keyword_len,
+                    "Queue key value table filter because a previous filter is still loading"
+                );
+            } else {
+                debug!("Skip key value table filter because a previous filter is still loading");
+            }
+            return;
+        }
+
         self.loading = true;
+        let keyword_len = keyword.as_str().len();
+        debug!(
+            keyword_len,
+            dynamic = T::filter_on_input_change(),
+            "Apply key value table filter"
+        );
         let accepted = self
             .table_state
-            .update(cx, |state, cx| state.delegate().fetcher().filter(keyword, cx));
+            .update(cx, |state, cx| state.delegate().fetcher().filter(keyword.clone(), cx));
         if !accepted {
             self.loading = false;
             debug!("Skip key value table filter because the current value is busy");
+            return;
         }
+
+        self.active_keyword = keyword;
+    }
+
+    fn run_queued_filter(&mut self, cx: &mut Context<Self>) {
+        let Some(keyword) = self.queued_keyword.take() else {
+            return;
+        };
+        self.apply_filter(keyword, true, true, cx);
     }
 
     /// Focuses the keyword search input field.
@@ -334,9 +398,13 @@ impl<T: ZedisKvFetcher> Render for ZedisKvTable<T> {
         if let Some(keyword) = self.pending_keyword.take()
             && self.keyword_state.read(cx).value() != keyword
         {
+            self.active_keyword = keyword.clone();
+            self.queued_keyword = None;
+            self.suppress_input_filter = true;
             self.keyword_state.update(cx, |input, cx| {
                 input.set_value(keyword, window, cx);
             });
+            self.suppress_input_filter = false;
         }
 
         // Handler for adding new values

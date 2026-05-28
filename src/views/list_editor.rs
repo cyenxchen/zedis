@@ -171,6 +171,11 @@ impl ZedisKvFetcher for ZedisListValues {
         self.server_state
             .update(cx, |state, cx| state.filter_list_value(keyword, cx))
     }
+
+    fn filter_on_input_change() -> bool {
+        true
+    }
+
     /// Opens a dialog to add a new value to the Redis list.
     ///
     /// The dialog allows users to choose between:

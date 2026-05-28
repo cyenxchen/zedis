@@ -50,6 +50,10 @@ fn unique_hash_fields(fields: Vec<SharedString>) -> Vec<SharedString> {
     unique
 }
 
+fn is_current_hash_pagination(hash: &RedisHashValue, keyword: Option<&SharedString>, cursor: u64) -> bool {
+    hash.keyword.as_ref() == keyword && hash.cursor == cursor
+}
+
 /// Retrieves HASH field-value pairs using Redis HSCAN command for cursor-based pagination.
 ///
 /// # Arguments
@@ -424,6 +428,8 @@ impl ZedisServerState {
             Some(hash) => (hash.cursor, hash.keyword.clone()),
             None => return,
         };
+        let request_cursor = cursor;
+        let request_keyword = keyword.clone();
 
         let server_id = self.server_id.clone();
         let db = self.db;
@@ -438,9 +444,9 @@ impl ZedisServerState {
                 let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
 
                 // Use larger batch size when filtering to reduce round trips
-                let count = if keyword.is_some() { 1000 } else { 100 };
+                let count = if request_keyword.is_some() { 1000 } else { 100 };
 
-                get_redis_hash_value(&mut conn, &key, keyword, cursor, count).await
+                get_redis_hash_value(&mut conn, &key, request_keyword, request_cursor, count).await
             },
             // UI callback: merge results into local state
             move |this, result, cx| {
@@ -459,6 +465,18 @@ impl ZedisServerState {
                     && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
                 {
                     let hash = Arc::make_mut(hash_data);
+                    if !is_current_hash_pagination(hash, keyword.as_ref(), cursor) {
+                        tracing::debug!(
+                            key = key_clone.as_str(),
+                            request_cursor = cursor,
+                            current_cursor = hash.cursor,
+                            request_keyword_len = keyword.as_ref().map(|keyword| keyword.as_str().len()).unwrap_or(0),
+                            current_keyword_len =
+                                hash.keyword.as_ref().map(|keyword| keyword.as_str().len()).unwrap_or(0),
+                            "Skip stale hash value pagination result because filter state changed"
+                        );
+                        return;
+                    }
                     hash.cursor = new_cursor;
 
                     // Mark as done when cursor returns to 0 (scan complete)
@@ -493,7 +511,7 @@ impl ZedisServerState {
 
 #[cfg(test)]
 mod tests {
-    use super::unique_hash_fields;
+    use super::{RedisHashValue, is_current_hash_pagination, unique_hash_fields};
     use gpui::SharedString;
 
     #[test]
@@ -508,5 +526,29 @@ mod tests {
             unique_hash_fields(fields),
             vec![SharedString::from("a"), SharedString::from("b")]
         );
+    }
+
+    #[test]
+    fn accepts_hash_pagination_for_matching_filter_state() {
+        let keyword = SharedString::from("field");
+        let hash = RedisHashValue {
+            keyword: Some(keyword.clone()),
+            cursor: 42,
+            ..Default::default()
+        };
+
+        assert!(is_current_hash_pagination(&hash, Some(&keyword), 42));
+    }
+
+    #[test]
+    fn rejects_hash_pagination_when_filter_state_changed() {
+        let old_keyword = SharedString::from("old");
+        let hash = RedisHashValue {
+            keyword: Some(SharedString::from("new")),
+            cursor: 0,
+            ..Default::default()
+        };
+
+        assert!(!is_current_hash_pagination(&hash, Some(&old_keyword), 42));
     }
 }

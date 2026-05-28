@@ -82,6 +82,11 @@ pub trait ZedisKvFetcher: 'static {
     /// Filters data based on a keyword.
     fn filter(&self, keyword: SharedString, _cx: &mut App) -> bool;
 
+    /// Returns whether typing in the keyword input should trigger filtering immediately.
+    fn filter_on_input_change() -> bool {
+        false
+    }
+
     /// Opens a dialog to add a new value.
     fn handle_add_value(&self, _window: &mut Window, _cx: &mut App);
 
