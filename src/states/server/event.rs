@@ -13,7 +13,10 @@
 // limitations under the License.
 
 use crate::helpers::EditorAction;
-use crate::states::{ErrorMessage, NotificationAction, PresetCredential, ZedisServerState};
+use crate::{
+    connection::KeyBackupProgress,
+    states::{ErrorMessage, NotificationAction, PresetCredential, ZedisServerState},
+};
 use gpui::prelude::*;
 use gpui::{EventEmitter, SharedString};
 
@@ -106,6 +109,12 @@ pub enum ServerTask {
     /// Export selected keys to a file
     ExportKeys,
 
+    /// Export a key-level backup
+    ExportKeyBackup,
+
+    /// Restore a key-level backup
+    RestoreKeyBackup,
+
     /// Import keys from a file
     ImportKeys,
 }
@@ -143,6 +152,8 @@ impl ServerTask {
             ServerTask::RemoveHashValues => "remove_hash_values",
             ServerTask::DuplicateKey => "duplicate_key",
             ServerTask::ExportKeys => "export_keys",
+            ServerTask::ExportKeyBackup => "export_key_backup",
+            ServerTask::RestoreKeyBackup => "restore_key_backup",
             ServerTask::ImportKeys => "import_keys",
         }
     }
@@ -223,6 +234,15 @@ pub enum ServerEvent {
 
     /// Keys have been exported (count)
     KeysExported(usize),
+
+    /// Key backup has been exported (key_count, bytes)
+    KeyBackupExported(usize, u64),
+
+    /// Key backup has been restored (restored_count, failed_count)
+    KeyBackupRestored(usize, usize),
+
+    /// Key backup or restore progress has changed.
+    KeyBackupProgress(KeyBackupProgress),
 
     /// Keys have been imported (success_count, fail_count)
     KeysImported(usize, usize),

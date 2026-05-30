@@ -22,12 +22,19 @@ use super::{
 };
 use crate::error::Error;
 use crate::states::PresetCredential;
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use chrono::Utc;
 use dashmap::DashMap;
+use futures::channel::mpsc::UnboundedSender;
 use gpui::SharedString;
 use redis::{Cmd, FromRedisValue, InfoDict, Role, aio::MultiplexedConnection, cluster, cmd};
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::{BufRead, BufReader, BufWriter, Write},
+    path::{Path, PathBuf},
     sync::LazyLock,
     time::Duration,
 };
@@ -189,6 +196,55 @@ pub struct RedisClientDescription {
     pub master_nodes: SharedString,
     pub slave_nodes: SharedString,
 }
+
+#[derive(Debug, Clone)]
+pub struct KeyBackupSummary {
+    pub file_path: String,
+    pub key_count: usize,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct KeyRestoreSummary {
+    pub file_path: String,
+    pub restored_count: usize,
+    pub failed_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyBackupProgressPhase {
+    Export,
+    Restore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBackupProgress {
+    pub phase: KeyBackupProgressPhase,
+    pub processed: usize,
+    pub total: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KeyBackupHeader {
+    format: String,
+    version: u8,
+    exported_at: String,
+    server_id: String,
+    db: usize,
+    server_type: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct KeyBackupRecord {
+    key: String,
+    dump: String,
+    ttl_ms: i64,
+}
+
+const KEY_BACKUP_FORMAT: &str = "zedis-key-backup";
+const KEY_BACKUP_VERSION: u8 = 1;
+const KEY_BACKUP_SCAN_COUNT: u64 = 500;
+const KEY_BACKUP_PROGRESS_INTERVAL: usize = 100;
 impl RedisClient {
     pub fn nodes(&self) -> (usize, usize) {
         (self.master_nodes.len(), self.nodes.len())
@@ -305,6 +361,126 @@ impl RedisClient {
         }
         keys.sort_unstable();
         Ok((cursors, keys))
+    }
+}
+
+fn key_backup_error(message: impl Into<String>) -> Error {
+    Error::Invalid {
+        message: message.into(),
+    }
+}
+
+fn send_key_backup_progress(
+    tx: &Option<UnboundedSender<KeyBackupProgress>>,
+    phase: KeyBackupProgressPhase,
+    processed: usize,
+    total: Option<usize>,
+) {
+    if let Some(tx) = tx {
+        let _ = tx.unbounded_send(KeyBackupProgress {
+            phase,
+            processed,
+            total,
+        });
+    }
+}
+
+fn should_report_key_backup_progress(processed: usize) -> bool {
+    processed == 0 || processed.is_multiple_of(KEY_BACKUP_PROGRESS_INTERVAL)
+}
+
+fn count_key_backup_records(path: &str) -> Result<usize> {
+    let file = File::open(path)?;
+    let mut lines = BufReader::new(file).lines();
+    let _ = lines
+        .next()
+        .transpose()?
+        .ok_or_else(|| key_backup_error("Backup file is empty"))?;
+    let mut count = 0_usize;
+    for line in lines {
+        if !line?.trim().is_empty() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn key_backup_temp_path(target: &Path) -> PathBuf {
+    let file_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("zedis-backup");
+    let suffix = Utc::now()
+        .timestamp_nanos_opt()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| Utc::now().timestamp_millis().to_string());
+    target.with_file_name(format!(".{file_name}.{suffix}.tmp"))
+}
+
+fn key_backup_publish_path(target: &Path, attempt: usize) -> PathBuf {
+    if attempt == 0 {
+        return target.to_path_buf();
+    }
+
+    let file_stem = target
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("zedis-backup");
+    let file_name = match target.extension().and_then(|name| name.to_str()) {
+        Some(extension) => format!("{file_stem}-{attempt}.{extension}"),
+        None => format!("{file_stem}-{attempt}"),
+    };
+    target.with_file_name(file_name)
+}
+
+fn next_available_key_backup_path(target: &Path) -> Result<PathBuf> {
+    const MAX_BACKUP_PATH_ATTEMPTS: usize = 1000;
+    for attempt in 0..MAX_BACKUP_PATH_ATTEMPTS {
+        let path = key_backup_publish_path(target, attempt);
+        if !path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(key_backup_error(format!(
+        "Unable to find an available backup file name near {}",
+        target.display()
+    )))
+}
+
+struct PendingKeyBackupFile {
+    path: PathBuf,
+    persisted: bool,
+}
+
+impl PendingKeyBackupFile {
+    fn new(target: &Path) -> Self {
+        Self {
+            path: key_backup_temp_path(target),
+            persisted: false,
+        }
+    }
+
+    fn persist(mut self, target: &Path) -> Result<PathBuf> {
+        let publish_path = next_available_key_backup_path(target)?;
+        if publish_path != target {
+            info!(
+                temp_path = %self.path.display(),
+                requested_path = %target.display(),
+                publish_path = %publish_path.display(),
+                "backup target already exists, publishing with a unique file name"
+            );
+        }
+        std::fs::rename(&self.path, &publish_path)?;
+        self.persisted = true;
+        Ok(publish_path)
+    }
+}
+
+impl Drop for PendingKeyBackupFile {
+    fn drop(&mut self) {
+        if !self.persisted {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -576,6 +752,254 @@ impl ConnectionManager {
         self.clients.insert(key, client.clone());
         Ok((client, auth_source))
     }
+
+    /// Exports a key-level backup using SCAN + DUMP + PTTL.
+    ///
+    /// The generated JSONL file can be restored online with RESTORE REPLACE.
+    pub async fn export_key_backup(
+        &self,
+        server_id: &str,
+        db: usize,
+        preset_credentials: Vec<PresetCredential>,
+        file_path: &str,
+        progress_tx: Option<UnboundedSender<KeyBackupProgress>>,
+    ) -> Result<KeyBackupSummary> {
+        let (client, _) = self.get_client(server_id, db, preset_credentials).await?;
+        let master_nodes = client.master_nodes.clone();
+        if master_nodes.is_empty() {
+            return Err(key_backup_error("No Redis master node found for key backup"));
+        }
+
+        let target = Path::new(file_path);
+        let server_type = format!("{:?}", client.server_type);
+        info!(
+            server_id,
+            db,
+            server_type,
+            master_count = master_nodes.len(),
+            path = %target.display(),
+            "start key backup export"
+        );
+
+        let total_keys = client.dbsize().await.ok().map(|value| value as usize);
+        send_key_backup_progress(&progress_tx, KeyBackupProgressPhase::Export, 0, total_keys);
+
+        if let Some(parent) = target.parent().filter(|path| !path.as_os_str().is_empty()) {
+            info!(path = %parent.display(), "ensure key backup directory exists");
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let pending_file = PendingKeyBackupFile::new(target);
+        info!(
+            temp_path = %pending_file.path.display(),
+            target_path = %target.display(),
+            "write key backup to temp file"
+        );
+        let file = File::create(&pending_file.path)?;
+        let mut writer = BufWriter::new(file);
+        let header = KeyBackupHeader {
+            format: KEY_BACKUP_FORMAT.to_string(),
+            version: KEY_BACKUP_VERSION,
+            exported_at: Utc::now().to_rfc3339(),
+            server_id: server_id.to_string(),
+            db,
+            server_type,
+        };
+        serde_json::to_writer(&mut writer, &header)?;
+        writer.write_all(b"\n")?;
+
+        let mut key_count = 0_usize;
+        for node in master_nodes {
+            let node_id = node.host_port();
+            let mut conn = open_single_connection(&node.server, db).await?;
+            let mut cursor = 0_u64;
+            info!(node = %node_id, "start scanning node for key backup");
+
+            loop {
+                let (next_cursor, keys): (u64, Vec<Vec<u8>>) = cmd("SCAN")
+                    .cursor_arg(cursor)
+                    .arg("COUNT")
+                    .arg(KEY_BACKUP_SCAN_COUNT)
+                    .query_async(&mut conn)
+                    .await?;
+                cursor = next_cursor;
+
+                if keys.is_empty() {
+                    if cursor == 0 {
+                        break;
+                    }
+                    continue;
+                }
+
+                let mut pipeline = redis::pipe();
+                for key in &keys {
+                    pipeline.cmd("DUMP").arg(key);
+                    pipeline.cmd("PTTL").arg(key);
+                }
+                let results: Vec<redis::Value> = pipeline.query_async(&mut conn).await?;
+                let mut result_iter = results.into_iter();
+
+                for key in keys {
+                    let dump_value = result_iter
+                        .next()
+                        .ok_or_else(|| key_backup_error("Missing DUMP result while exporting backup"))?;
+                    let ttl_value = result_iter
+                        .next()
+                        .ok_or_else(|| key_backup_error("Missing PTTL result while exporting backup"))?;
+                    if matches!(dump_value, redis::Value::Nil) {
+                        continue;
+                    }
+                    let dump: Vec<u8> = redis::from_redis_value(dump_value).map_err(|e| {
+                        key_backup_error(format!("Failed to parse DUMP result while exporting backup: {}", e))
+                    })?;
+                    let ttl_ms: i64 = redis::from_redis_value(ttl_value).map_err(|e| {
+                        key_backup_error(format!("Failed to parse PTTL result while exporting backup: {}", e))
+                    })?;
+                    if ttl_ms == -2 {
+                        continue;
+                    }
+                    let record = KeyBackupRecord {
+                        key: BASE64.encode(&key),
+                        dump: BASE64.encode(&dump),
+                        ttl_ms,
+                    };
+                    serde_json::to_writer(&mut writer, &record)?;
+                    writer.write_all(b"\n")?;
+                    key_count += 1;
+                    if should_report_key_backup_progress(key_count) {
+                        send_key_backup_progress(&progress_tx, KeyBackupProgressPhase::Export, key_count, total_keys);
+                    }
+                }
+
+                if cursor == 0 {
+                    break;
+                }
+            }
+            info!(node = %node_id, key_count, "node key backup scan finished");
+        }
+
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        let bytes = std::fs::metadata(&pending_file.path)?.len();
+        drop(writer);
+        let published_path = pending_file.persist(target)?;
+        send_key_backup_progress(
+            &progress_tx,
+            KeyBackupProgressPhase::Export,
+            key_count,
+            total_keys.or(Some(key_count)),
+        );
+
+        info!(
+            server_id,
+            db,
+            key_count,
+            bytes,
+            path = %published_path.display(),
+            "key backup export finished"
+        );
+        Ok(KeyBackupSummary {
+            file_path: published_path.to_string_lossy().to_string(),
+            key_count,
+            bytes,
+        })
+    }
+
+    /// Restores a key-level backup generated by `export_key_backup`.
+    pub async fn restore_key_backup(
+        &self,
+        server_id: &str,
+        db: usize,
+        preset_credentials: Vec<PresetCredential>,
+        file_path: &str,
+        progress_tx: Option<UnboundedSender<KeyBackupProgress>>,
+    ) -> Result<KeyRestoreSummary> {
+        let _ = self.get_client(server_id, db, preset_credentials).await?;
+        let mut conn = self.get_connection(server_id, db).await?;
+        let total_records = count_key_backup_records(file_path)?;
+        send_key_backup_progress(&progress_tx, KeyBackupProgressPhase::Restore, 0, Some(total_records));
+        let file = File::open(file_path)?;
+        let mut lines = BufReader::new(file).lines();
+        let header_line = lines
+            .next()
+            .transpose()?
+            .ok_or_else(|| key_backup_error("Backup file is empty"))?;
+        let header: KeyBackupHeader = serde_json::from_str(&header_line)?;
+        if header.format != KEY_BACKUP_FORMAT || header.version != KEY_BACKUP_VERSION {
+            return Err(key_backup_error("Unsupported Zedis key backup format"));
+        }
+
+        info!(
+            server_id,
+            db,
+            source_db = header.db,
+            path = %file_path,
+            "start key backup restore"
+        );
+
+        let mut restored_count = 0_usize;
+        let mut failed_count = 0_usize;
+        for (line_index, line) in lines.enumerate() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: KeyBackupRecord = serde_json::from_str(&line)
+                .map_err(|e| key_backup_error(format!("Invalid backup record at line {}: {}", line_index + 2, e)))?;
+            let key = BASE64
+                .decode(record.key)
+                .map_err(|e| key_backup_error(format!("Invalid key encoding at line {}: {}", line_index + 2, e)))?;
+            let dump = BASE64
+                .decode(record.dump)
+                .map_err(|e| key_backup_error(format!("Invalid dump encoding at line {}: {}", line_index + 2, e)))?;
+            let ttl_ms = if record.ttl_ms > 0 { record.ttl_ms } else { 0 };
+            let result: redis::RedisResult<()> = cmd("RESTORE")
+                .arg(&key)
+                .arg(ttl_ms)
+                .arg(&dump)
+                .arg("REPLACE")
+                .query_async(&mut conn)
+                .await;
+            match result {
+                Ok(()) => restored_count += 1,
+                Err(e) => {
+                    failed_count += 1;
+                    error!(error = %e, line = line_index + 2, "failed to restore key backup record");
+                }
+            }
+            let processed = restored_count + failed_count;
+            if should_report_key_backup_progress(processed) {
+                send_key_backup_progress(
+                    &progress_tx,
+                    KeyBackupProgressPhase::Restore,
+                    processed,
+                    Some(total_records),
+                );
+            }
+        }
+
+        send_key_backup_progress(
+            &progress_tx,
+            KeyBackupProgressPhase::Restore,
+            restored_count + failed_count,
+            Some(total_records),
+        );
+
+        info!(
+            server_id,
+            db,
+            restored_count,
+            failed_count,
+            path = %file_path,
+            "key backup restore finished"
+        );
+        Ok(KeyRestoreSummary {
+            file_path: file_path.to_string(),
+            restored_count,
+            failed_count,
+        })
+    }
+
     /// Shorthand to get an async connection directly.
     /// Uses empty preset credentials since connection should already be cached.
     pub async fn get_connection(&self, server_id: &str, db: usize) -> Result<RedisAsyncConn> {
@@ -587,4 +1011,61 @@ impl ConnectionManager {
 /// Global accessor for the connection manager.
 pub fn get_connection_manager() -> &'static ConnectionManager {
     &CONNECTION_MANAGER
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_key_backup_record() {
+        let record = KeyBackupRecord {
+            key: BASE64.encode(b"hello"),
+            dump: BASE64.encode(b"serialized"),
+            ttl_ms: -1,
+        };
+        let line = serde_json::to_string(&record).expect("serialize backup record");
+        let parsed: KeyBackupRecord = serde_json::from_str(&line).expect("parse backup record");
+        assert_eq!(BASE64.decode(parsed.key).expect("decode key"), b"hello");
+        assert_eq!(BASE64.decode(parsed.dump).expect("decode dump"), b"serialized");
+        assert_eq!(parsed.ttl_ms, -1);
+    }
+
+    #[test]
+    fn key_backup_temp_path_stays_next_to_target() {
+        let target = Path::new("/tmp/redis.zedis-backup.jsonl");
+        let temp_path = key_backup_temp_path(target);
+        assert_eq!(temp_path.parent(), target.parent());
+        assert!(
+            temp_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("temp file name")
+                .starts_with(".redis.zedis-backup.jsonl.")
+        );
+    }
+
+    #[test]
+    fn pending_key_backup_file_uses_unique_path_when_target_exists() {
+        let suffix = Utc::now()
+            .timestamp_nanos_opt()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| Utc::now().timestamp_millis().to_string());
+        let dir = std::env::temp_dir().join(format!("zedis-backup-test-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let target = dir.join("backup.zedis-backup.jsonl");
+        std::fs::write(&target, b"existing").expect("write existing target");
+        let pending = PendingKeyBackupFile::new(&target);
+        let temp_path = pending.path.clone();
+        std::fs::write(&temp_path, b"new").expect("write temp backup");
+
+        let published_path = pending.persist(&target).expect("publish temp backup");
+        assert_ne!(published_path, target);
+        assert_eq!(std::fs::read(&target).expect("read existing target"), b"existing");
+        assert_eq!(std::fs::read(&published_path).expect("read published backup"), b"new");
+        assert!(!temp_path.exists());
+
+        std::fs::remove_dir_all(&dir).expect("remove temp dir");
+    }
 }

@@ -14,23 +14,25 @@
 
 use crate::{
     assets::CustomIconName,
-    connection::RedisClientDescription,
+    connection::{KeyBackupProgress, KeyBackupProgressPhase, RedisClientDescription},
     helpers::humanize_keystroke,
     states::{
         DataFormat, ErrorMessage, ServerEvent, ServerTask, ViewMode, ZedisGlobalStore, ZedisServerState, i18n_common,
         i18n_sidebar, i18n_status_bar,
     },
 };
-use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*};
+use chrono::Local;
+use directories::UserDirs;
+use gpui::{Entity, Hsla, SharedString, Subscription, Task, TextAlign, Window, div, prelude::*, px};
 use gpui_component::select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable,
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex,
     label::Label,
     tooltip::Tooltip,
 };
-use std::{sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tracing::info;
 
 /// Formats the database size and scan count string "count/total".
@@ -88,6 +90,40 @@ fn format_nodes_description(description: Arc<RedisClientDescription>, cx: &Conte
     messages.join("\n").into()
 }
 
+fn sanitize_file_stem(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            result.push(ch);
+        } else {
+            result.push('_');
+        }
+    }
+    let result = result.trim_matches('_');
+    if result.is_empty() {
+        "redis".to_string()
+    } else {
+        result.to_string()
+    }
+}
+
+fn default_key_backup_file_name(server_id: &str) -> String {
+    let timestamp = Local::now().format("%Y%m%d-%H%M%S-%f");
+    let stem = sanitize_file_stem(server_id);
+    format!("{stem}-{timestamp}.zedis-backup.jsonl")
+}
+
+fn default_key_backup_file_path(server_id: &str) -> PathBuf {
+    let base_dir = UserDirs::new()
+        .and_then(|dirs| dirs.download_dir().map(|path| path.to_path_buf()))
+        .unwrap_or_else(std::env::temp_dir);
+    base_dir
+        .join("Zedis Backups")
+        .join(default_key_backup_file_name(server_id))
+}
+
+const FILE_DIALOG_OPEN_DELAY: Duration = Duration::from_millis(80);
+
 // --- Local State ---
 
 #[derive(Default)]
@@ -128,6 +164,7 @@ struct StatusBarState {
     data_format: Option<SharedString>,
     data_format_type: Option<DataFormat>,
     error: Option<ErrorMessage>,
+    key_backup_progress: Option<KeyBackupProgress>,
     protobuf_types: Vec<SharedString>,
 }
 
@@ -176,11 +213,15 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::ErrorOccurred(error) => {
                     this.state.error = Some(error.clone());
+                    this.state.key_backup_progress = None;
                 }
                 ServerEvent::TaskStarted(task) => {
                     // Clear error when a new task starts (except background ping)
                     if *task != ServerTask::RefreshRedisInfo {
                         this.state.error = None;
+                    }
+                    if matches!(task, ServerTask::ExportKeyBackup | ServerTask::RestoreKeyBackup) {
+                        this.state.key_backup_progress = None;
                     }
                 }
                 ServerEvent::ValueLoaded(_) => {
@@ -204,6 +245,12 @@ impl ZedisStatusBar {
                 }
                 ServerEvent::ProtobufTypeSelected(_) => {
                     // Re-decode value with new type if applicable
+                }
+                ServerEvent::KeyBackupProgress(progress) => {
+                    this.state.key_backup_progress = Some(progress.clone());
+                }
+                ServerEvent::KeyBackupExported(_, _) | ServerEvent::KeyBackupRestored(_, _) => {
+                    this.state.key_backup_progress = None;
                 }
                 _ => {
                     return;
@@ -383,6 +430,17 @@ impl ZedisStatusBar {
                 this.child(Select::new(&self.db_state).mr_2().mt_1().small())
             })
             .child(
+                Button::new("zedis-status-bar-backup-restore")
+                    .outline()
+                    .small()
+                    .tooltip(i18n_status_bar(cx, "backup_restore_tooltip"))
+                    .icon(IconName::File)
+                    .mr_1()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_backup_restore_dialog(window, cx);
+                    })),
+            )
+            .child(
                 Button::new("zedis-status-bar-key-collapse")
                     .outline()
                     .small()
@@ -471,6 +529,106 @@ impl ZedisStatusBar {
                 });
                 cx.notify();
             }))
+    }
+
+    fn render_key_backup_progress(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(progress) = &self.state.key_backup_progress else {
+            return h_flex().into_any_element();
+        };
+        let label = match progress.phase {
+            KeyBackupProgressPhase::Export => i18n_status_bar(cx, "backup_progress"),
+            KeyBackupProgressPhase::Restore => i18n_status_bar(cx, "restore_progress"),
+        };
+        let (ratio, text) = if let Some(total) = progress.total {
+            let ratio = if total > 0 {
+                (progress.processed as f32 / total as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (ratio, format!("{} {}/{}", label, progress.processed, total))
+        } else {
+            (0.0, format!("{} {}", label, progress.processed))
+        };
+
+        h_flex()
+            .items_center()
+            .mr_3()
+            .gap_2()
+            .child(Label::new(text).text_xs())
+            .child(
+                div().w(px(96.)).h(px(6.)).rounded(px(3.)).bg(cx.theme().muted).child(
+                    div()
+                        .h_full()
+                        .w(gpui::relative(ratio))
+                        .rounded(px(3.))
+                        .bg(cx.theme().primary),
+                ),
+            )
+            .into_any_element()
+    }
+
+    fn open_backup_restore_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let server_state = self.server_state.clone();
+        let server_id = server_state.read(cx).server_id().to_string();
+        let default_file_path = default_key_backup_file_path(&server_id);
+
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let title = i18n_status_bar(cx, "backup_restore");
+            let backup_label = i18n_status_bar(cx, "backup");
+            let restore_label = i18n_status_bar(cx, "restore");
+            let backup_state = server_state.clone();
+            let restore_state = server_state.clone();
+            let backup_file_path = default_file_path.clone();
+
+            dialog.title(div().w_full().text_center().child(title)).child(
+                h_flex()
+                    .w_full()
+                    .justify_center()
+                    .gap_3()
+                    .child(
+                        Button::new("zedis-backup-dialog-backup")
+                            .primary()
+                            .large()
+                            .icon(IconName::File)
+                            .label(backup_label)
+                            .on_click(move |_, window, cx| {
+                                let server_state = backup_state.clone();
+                                let path = backup_file_path.to_string_lossy().to_string();
+                                window.close_dialog(cx);
+                                info!(path = %path, "starting key backup without native save dialog");
+                                server_state.update(cx, |state, cx| {
+                                    state.export_key_backup(path, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("zedis-backup-dialog-restore")
+                            .large()
+                            .icon(IconName::Redo)
+                            .label(restore_label)
+                            .on_click(move |_, window, cx| {
+                                let server_state = restore_state.clone();
+                                window.close_dialog(cx);
+                                cx.spawn(async move |cx| {
+                                    info!("restore file dialog scheduled after closing backup dialog");
+                                    cx.background_executor().timer(FILE_DIALOG_OPEN_DELAY).await;
+                                    info!("opening backup file restore dialog");
+                                    let handle = rfd::AsyncFileDialog::new()
+                                        .add_filter("Zedis backup", &["jsonl"])
+                                        .pick_file()
+                                        .await;
+                                    if let Some(file) = handle {
+                                        let path = file.path().to_string_lossy().to_string();
+                                        let _ = server_state.update(cx, |state, cx| {
+                                            state.restore_key_backup(path, cx);
+                                        });
+                                    }
+                                })
+                                .detach();
+                            }),
+                    ),
+            )
+        });
     }
     fn render_data_format(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(data_format) = self.state.data_format.clone() else {
@@ -597,6 +755,7 @@ impl Render for ZedisStatusBar {
             .border_color(cx.theme().border)
             .text_color(cx.theme().muted_foreground)
             .child(self.render_server_status(window, cx))
+            .child(self.render_key_backup_progress(window, cx))
             .child(self.render_editor_settings(window, cx))
             .child(self.render_data_format(window, cx))
             .child(self.render_protobuf_controls(window, cx))

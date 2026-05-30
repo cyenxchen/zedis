@@ -32,6 +32,7 @@ use tracing::{debug, error};
 use uuid::Uuid;
 use value::{KeyType, RedisValue, RedisValueData};
 
+pub mod backup;
 pub mod event;
 pub mod hash;
 pub mod key;
