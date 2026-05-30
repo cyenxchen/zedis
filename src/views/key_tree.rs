@@ -33,8 +33,10 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState, SelectAll},
     label::Label,
+    scroll::ScrollableElement,
     v_flex,
 };
+use rust_i18n::t;
 use std::rc::Rc;
 use tracing::{debug, info};
 
@@ -185,6 +187,46 @@ fn key_matches_filter_terms(key: &str, filter_terms: &[SharedString]) -> bool {
         .all(|term| term.is_empty() || key.contains(term.as_str()))
 }
 
+fn confirm_delete_selected_keys(
+    keys: Vec<SharedString>,
+    server_state: Entity<ZedisServerState>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if keys.is_empty() {
+        return;
+    }
+    let selected_count = keys.len();
+    info!(
+        selected_count,
+        "Showing confirmation before deleting selected Redis keys"
+    );
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
+        let message = t!(
+            "key_tree.delete_selected_prompt",
+            count = selected_count,
+            locale = locale
+        )
+        .to_string();
+        let server_state = server_state.clone();
+        let keys = keys.clone();
+
+        dialog
+            .confirm()
+            .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
+            .on_ok(move |_, window, cx| {
+                let keys = keys.clone();
+                info!(selected_count = keys.len(), "Confirmed selected Redis keys deletion");
+                server_state.update(cx, move |state, cx| {
+                    state.delete_keys(keys, cx);
+                });
+                window.close_dialog(cx);
+                true
+            })
+    });
+}
+
 struct KeyTreeDelegate {
     items: Vec<KeyTreeItem>,
     selected_index: Option<IndexPath>,
@@ -308,6 +350,16 @@ impl ListDelegate for KeyTreeDelegate {
                     move |_, window, cx| {
                         let _ = view.update(cx, |v, cx| {
                             v.right_clicked_key = Some(key_id.clone());
+
+                            let should_keep_multi_selection = {
+                                let state = v.server_state.read(cx);
+                                state.selected_keys_count() > 1 && state.is_key_selected(&key_id)
+                            };
+                            if !should_keep_multi_selection {
+                                v.server_state.update(cx, |state, cx| {
+                                    state.set_single_selected_key(key_id.clone(), cx);
+                                });
+                            }
 
                             // Select the key if it's not already selected
                             let current_key = v.server_state.read(cx).key();
@@ -485,10 +537,10 @@ impl ZedisKeyTree {
         let key_tree_list_state = cx.new(|cx| ListState::new(delegate, window, cx));
         subscriptions.push(cx.subscribe(&key_tree_list_state, |view, _, event, cx| match event {
             ListEvent::Select(ix) => {
-                view.select_item_by_index(ix, false, cx);
+                view.select_item_by_index(ix, false, true, cx);
             }
             ListEvent::Confirm(ix) => {
-                view.select_item_by_index(ix, true, cx);
+                view.select_item_by_index(ix, true, false, cx);
             }
             _ => {}
         }));
@@ -704,6 +756,63 @@ impl ZedisKeyTree {
         });
     }
 
+    fn select_all_visible_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let input_focus = self.keyword_state.read(cx).focus_handle(cx);
+        if input_focus.is_focused(window) {
+            input_focus.dispatch_action(&SelectAll, window, cx);
+            return;
+        }
+        for filter in &self.local_filters {
+            let filter_focus = filter.input.read(cx).focus_handle(cx);
+            if filter_focus.is_focused(window) {
+                filter_focus.dispatch_action(&SelectAll, window, cx);
+                return;
+            }
+        }
+        let keys: Vec<SharedString> = self
+            .key_tree_list_state
+            .read(cx)
+            .delegate()
+            .items
+            .iter()
+            .filter(|item| !item.is_folder)
+            .map(|item| item.id.clone())
+            .collect();
+        if !keys.is_empty() {
+            self.server_state.update(cx, |state, cx| {
+                state.select_key_range(keys, cx);
+            });
+        }
+    }
+
+    fn delete_selected_keys_from_keyboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.keyword_state.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        if self
+            .local_filters
+            .iter()
+            .any(|filter| filter.input.read(cx).focus_handle(cx).is_focused(window))
+        {
+            return;
+        }
+        let keys: Vec<SharedString> = self.server_state.read(cx).selected_keys().iter().cloned().collect();
+        if keys.is_empty() {
+            return;
+        }
+        info!(
+            selected_count = keys.len(),
+            "Deleting selected Redis keys from key tree shortcut"
+        );
+        if keys.len() > 1 {
+            confirm_delete_selected_keys(keys, self.server_state.clone(), window, cx);
+        } else {
+            self.server_state.update(cx, |state, cx| {
+                state.delete_keys(keys, cx);
+            });
+        }
+    }
+
     /// Handle explicit refresh action and clear per-key value searches.
     fn handle_refresh(&mut self, cx: &mut Context<Self>) {
         // Don't trigger refresh while already scanning
@@ -837,7 +946,7 @@ impl ZedisKeyTree {
         )
     }
 
-    fn select_item_by_index(&mut self, ix: &IndexPath, toggle: bool, cx: &mut Context<Self>) {
+    fn select_item_by_index(&mut self, ix: &IndexPath, toggle: bool, sync_selected_keys: bool, cx: &mut Context<Self>) {
         let Some((id, is_folder)) = self.key_tree_list_state.update(cx, |state, _cx| {
             let item = state.delegate().items.get(ix.row)?;
             let id = item.id.clone();
@@ -846,11 +955,24 @@ impl ZedisKeyTree {
         }) else {
             return;
         };
-        self.select_item(id, is_folder, toggle, cx);
+        self.select_item(id, is_folder, toggle, sync_selected_keys, cx);
     }
 
-    fn select_item(&mut self, item_id: SharedString, is_folder: bool, toggle: bool, cx: &mut Context<Self>) {
+    fn select_item(
+        &mut self,
+        item_id: SharedString,
+        is_folder: bool,
+        toggle: bool,
+        sync_selected_keys: bool,
+        cx: &mut Context<Self>,
+    ) {
         if is_folder {
+            if sync_selected_keys {
+                debug!(folder = %item_id, "Clear key tree key selection from folder list event");
+                self.server_state.update(cx, |state, cx| {
+                    state.clear_selected_keys(cx);
+                });
+            }
             if self.state.expanded_items.contains(&item_id) {
                 if !toggle {
                     return;
@@ -871,6 +993,12 @@ impl ZedisKeyTree {
             if !is_selected {
                 self.server_state.update(cx, |state, cx| {
                     state.select_key(item_id.clone(), cx);
+                });
+            }
+            if sync_selected_keys {
+                debug!(key = %item_id, "Sync key tree single selection from list event");
+                self.server_state.update(cx, |state, cx| {
+                    state.set_single_selected_key(item_id.clone(), cx);
                 });
             }
         }
@@ -1013,11 +1141,10 @@ impl ZedisKeyTree {
                                 i18n_key_tree(cx, "delete_selected"),
                                 selected_count
                             ))
-                            .on_click(move |_, _window, cx| {
-                                ss_delete.update(cx, |state, cx| {
-                                    let keys: Vec<SharedString> = state.selected_keys().iter().cloned().collect();
-                                    state.delete_keys(keys, cx);
-                                });
+                            .on_click(move |_, window, cx| {
+                                let keys: Vec<SharedString> =
+                                    ss_delete.read(cx).selected_keys().iter().cloned().collect();
+                                confirm_delete_selected_keys(keys, ss_delete.clone(), window, cx);
                             }),
                         )
                     } else if let Some(key) = right_clicked_key {
@@ -1205,36 +1332,13 @@ impl Render for ZedisKeyTree {
         v_flex()
             .h_full()
             .w_full()
+            .key_context("KeyTree")
             .track_focus(&self.focus_handle)
             .child(self.render_keyword_input(window, cx))
             .child(self.render_tree(cx))
-            .on_action(cx.listener(|this, _: &KeyTreeAction, window, cx| {
-                let input_focus = this.keyword_state.read(cx).focus_handle(cx);
-                if input_focus.is_focused(window) {
-                    input_focus.dispatch_action(&SelectAll, window, cx);
-                    return;
-                }
-                for filter in &this.local_filters {
-                    let filter_focus = filter.input.read(cx).focus_handle(cx);
-                    if filter_focus.is_focused(window) {
-                        filter_focus.dispatch_action(&SelectAll, window, cx);
-                        return;
-                    }
-                }
-                let keys: Vec<SharedString> = this
-                    .key_tree_list_state
-                    .read(cx)
-                    .delegate()
-                    .items
-                    .iter()
-                    .filter(|item| !item.is_folder)
-                    .map(|item| item.id.clone())
-                    .collect();
-                if !keys.is_empty() {
-                    this.server_state.update(cx, |state, cx| {
-                        state.select_key_range(keys, cx);
-                    });
-                }
+            .on_action(cx.listener(|this, action: &KeyTreeAction, window, cx| match action {
+                KeyTreeAction::SelectAll => this.select_all_visible_keys(window, cx),
+                KeyTreeAction::DeleteSelected => this.delete_selected_keys_from_keyboard(window, cx),
             }))
             .on_action(cx.listener(|this, e: &QueryMode, _window, cx| {
                 let new_mode = *e;

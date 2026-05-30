@@ -42,6 +42,7 @@ pub enum ServersAction {
 #[derive(Clone, Copy, PartialEq, Debug, Deserialize, JsonSchema, Action)]
 pub enum KeyTreeAction {
     SelectAll,
+    DeleteSelected,
 }
 
 pub fn humanize_keystroke(keystroke: &str) -> String {
@@ -133,5 +134,7 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-j", EditorAction::Cmd, None),
         KeyBinding::new("secondary-f", ServersAction::Filter, None),
         KeyBinding::new("secondary-a", KeyTreeAction::SelectAll, None),
+        KeyBinding::new("delete", KeyTreeAction::DeleteSelected, Some("KeyTree")),
+        KeyBinding::new("backspace", KeyTreeAction::DeleteSelected, Some("KeyTree")),
     ]
 }
