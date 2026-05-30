@@ -18,7 +18,7 @@
 //! - Modal dialog for editing binary/text values
 //! - Format switching (Text, JSON, Hex, MessagePack)
 //! - Compression format selection (None, Gzip, Zstd, Snappy, LZ4)
-//! - Real-time validation with error display
+//! - Save-time validation with error display
 //! - Save/Cancel actions
 
 use crate::components::SelectableTextState;
@@ -33,7 +33,7 @@ use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::{
-    ActiveTheme, Disableable, Sizable, WindowExt,
+    ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
     h_flex, v_flex,
 };
@@ -103,7 +103,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     // Track current format and compression
     let current_format = Rc::new(Cell::new(initial_format));
     let current_compression = Rc::new(Cell::new(initial_compression));
-    let has_error = Rc::new(Cell::new(false));
     let error_message: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
     // Create input state for editor
@@ -142,28 +141,24 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     let title_text: SharedString = format!("Edit: {}", key).into();
     let selectable_title = cx.new(|cx| SelectableTextState::new(title_text, cx));
 
-    // Subscribe to editor changes for validation BEFORE open_dialog (only once)
+    // Subscribe to editor changes BEFORE open_dialog (only once)
     // This prevents multiple subscriptions from being created on each render frame,
     // which was causing race conditions and session state loss during save.
     {
-        let session_for_validation = session.clone();
-        let has_error_for_validation = has_error.clone();
-        let error_message_for_validation = error_message.clone();
-        let editor_text_for_validation = editor_text.clone();
+        let session_for_input = session.clone();
+        let error_message_for_input = error_message.clone();
+        let editor_text_for_input = editor_text.clone();
 
         cx.subscribe(&editor_input, move |_state, event, cx| {
             if let InputEvent::Change = event {
                 let text = _state.read(cx).value();
-                editor_text_for_validation.set(text.clone());
+                editor_text_for_input.set(text.clone());
 
-                let mut s = session_for_validation.take();
+                let mut s = session_for_input.take();
                 s.set_editor_text(text);
-                let valid = s.valid;
-                let err = s.error.clone();
-                session_for_validation.set(s);
+                session_for_input.set(s);
 
-                has_error_for_validation.set(!valid);
-                *error_message_for_validation.borrow_mut() = err;
+                *error_message_for_input.borrow_mut() = None;
             }
         })
         .detach();
@@ -176,11 +171,11 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         let session_for_save = session.clone();
         let key_for_save = key.clone();
         let server_state_for_save = server_state.clone();
-        let has_error_for_save = has_error.clone();
+        let error_message_for_save = error_message.clone();
         let on_save_for_ok = on_save.clone();
 
         // Clones for footer
-        let has_error_for_footer = has_error.clone();
+        let error_message_for_footer_save = error_message.clone();
         let session_for_footer_save = session.clone();
         let key_for_footer = key.clone();
         let server_state_for_footer = server_state.clone();
@@ -191,7 +186,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         for (idx, &fmt) in EditFormat::all().iter().enumerate() {
             let is_selected = current_format.get() == fmt;
             let session_clone = session.clone();
-            let has_error_clone = has_error.clone();
             let error_message_clone = error_message.clone();
             let editor_input_clone = editor_input.clone();
             let editor_text_clone = editor_text.clone();
@@ -214,12 +208,12 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                         if let Err(e) = s.set_editor_format(fmt) {
                             // Rollback UI state on failure
                             current_format_clone.set(old_format);
-                            has_error_clone.set(true);
                             *error_message_clone.borrow_mut() = Some(e.to_string());
+                            window.refresh();
                         } else {
                             // Success: clear error state (don't read old error from session)
-                            has_error_clone.set(false);
                             *error_message_clone.borrow_mut() = None;
+                            window.refresh();
 
                             // Update editor text
                             let new_text = s.editor_text.clone();
@@ -305,10 +299,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             )
             .on_ok({
                 move |_, window, cx| {
-                    if has_error_for_save.get() {
-                        return false;
-                    }
-
                     let mut s = session_for_save.take();
                     match s.build_save_bytes() {
                         Ok(bytes) => {
@@ -333,11 +323,9 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             true
                         }
                         Err(e) => {
-                            window.push_notification(
-                                gpui_component::notification::Notification::error(e.to_string()),
-                                cx,
-                            );
+                            *error_message_for_save.borrow_mut() = Some(e.to_string());
                             session_for_save.set(s);
+                            window.refresh();
                             false
                         }
                     }
@@ -351,13 +339,13 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                 move |_, _, _, cx| {
                     let confirm_label = i18n_common(cx, "save");
                     let cancel_label = i18n_common(cx, "cancel");
-                    let can_save = !has_error_for_footer.get();
 
                     // Clone for the save button callback
                     let session_for_btn = session_for_footer_save.clone();
                     let key_for_btn = key_for_footer.clone();
                     let server_state_for_btn = server_state_for_footer.clone();
                     let on_save_for_btn = on_save_for_footer.clone();
+                    let error_message_for_btn = error_message_for_footer_save.clone();
 
                     let mut buttons = vec![
                         Button::new("cancel")
@@ -365,11 +353,8 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             .on_click(|_, window: &mut Window, cx: &mut App| {
                                 window.close_dialog(cx);
                             }),
-                        Button::new("save")
-                            .primary()
-                            .disabled(!can_save)
-                            .label(confirm_label)
-                            .on_click(move |_, window: &mut Window, cx: &mut App| {
+                        Button::new("save").primary().label(confirm_label).on_click(
+                            move |_, window: &mut Window, cx: &mut App| {
                                 let mut s = session_for_btn.take();
                                 match s.build_save_bytes() {
                                     Ok(bytes) => {
@@ -393,14 +378,13 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                                         window.close_dialog(cx);
                                     }
                                     Err(e) => {
-                                        window.push_notification(
-                                            gpui_component::notification::Notification::error(e.to_string()),
-                                            cx,
-                                        );
+                                        *error_message_for_btn.borrow_mut() = Some(e.to_string());
                                         session_for_btn.set(s);
+                                        window.refresh();
                                     }
                                 }
-                            }),
+                            },
+                        ),
                     ];
 
                     if is_windows() {

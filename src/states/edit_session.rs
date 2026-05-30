@@ -27,6 +27,7 @@ use crate::helpers::codec::{
 };
 use bytes::Bytes;
 use gpui::SharedString;
+use tracing::debug;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -301,7 +302,11 @@ impl EditSession {
 
     /// Update the editor text
     ///
-    /// Validates the text and updates dirty/valid flags.
+    /// Updates dirty state without live validation.
+    ///
+    /// JSON, MessagePack and Hex editors can be briefly invalid while the user
+    /// is still typing, so strict validation is deferred to format switches and
+    /// saving.
     pub fn set_editor_text(&mut self, text: SharedString) {
         if text == self.editor_text {
             return;
@@ -309,18 +314,8 @@ impl EditSession {
 
         self.editor_text = text;
         self.dirty = true;
-
-        // Validate the text
-        match validate_format(&self.editor_text, self.editor_format) {
-            Ok(()) => {
-                self.valid = true;
-                self.error = None;
-            }
-            Err(e) => {
-                self.valid = false;
-                self.error = Some(e.to_string());
-            }
-        }
+        self.valid = true;
+        self.error = None;
     }
 
     /// Set the compression format for saving
@@ -357,14 +352,24 @@ impl EditSession {
     /// Build the final bytes for saving
     ///
     /// This will:
+    /// 0. Validate the editor text for the current format
     /// 1. Convert editor text back to bytes
     /// 2. Apply compression if selected
     pub fn build_save_bytes(&mut self) -> Result<Vec<u8>> {
-        if !self.valid {
-            return Err(Error::Invalid {
-                message: self.error.clone().unwrap_or_else(|| "Invalid data".to_string()),
-            });
+        if let Err(e) = validate_format(&self.editor_text, self.editor_format) {
+            self.valid = false;
+            self.error = Some(e.to_string());
+            debug!(
+                key = self.key.as_ref(),
+                format = self.editor_format.as_str(),
+                error = %e,
+                "Edit value save validation failed"
+            );
+            return Err(e);
         }
+
+        self.valid = true;
+        self.error = None;
 
         // Convert text to bytes
         let raw_bytes = encode_from_text(&self.editor_text, self.editor_format)?;
@@ -475,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn test_set_editor_text_validation() {
+    fn test_set_editor_text_defers_validation_until_save() {
         let mut session = EditSession::new("test:key".into(), Bytes::from("{}"));
         session.detect_and_init().expect("init failed");
         session.editor_format = EditFormat::Json;
@@ -485,8 +490,14 @@ mod tests {
         assert!(session.valid);
         assert!(session.dirty);
 
-        // Invalid JSON
+        // Invalid JSON should be allowed while typing.
         session.set_editor_text("{invalid}".into());
+        assert!(session.valid);
+        assert!(session.error.is_none());
+
+        // Save-time validation still blocks invalid JSON.
+        let result = session.build_save_bytes();
+        assert!(result.is_err());
         assert!(!session.valid);
         assert!(session.error.is_some());
     }
@@ -636,6 +647,8 @@ mod tests {
         // Invalid text
         session.editor_format = EditFormat::Json;
         session.set_editor_text("invalid json".into());
+        assert!(session.can_save());
+        assert!(session.build_save_bytes().is_err());
         assert!(!session.can_save());
     }
 
