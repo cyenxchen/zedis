@@ -50,7 +50,7 @@ const STRIPE_BACKGROUND_ALPHA_LIGHT: f32 = 0.03; // Odd row background alpha for
 
 #[derive(Default)]
 struct KeyTreeState {
-    /// current keyword
+    /// Primary keyword used for Redis SCAN.
     keyword: SharedString,
     server_id: SharedString,
     /// Unique ID for the current key tree (changes when keys are reloaded)
@@ -80,9 +80,14 @@ struct KeyTreeItem {
     is_folder: bool,
 }
 
+struct LocalFilterInput {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
 fn new_key_tree_items(
     mut keys: Vec<(SharedString, KeyType)>,
-    keyword: SharedString,
+    filter_terms: Vec<SharedString>,
     expand_all: bool,
     expanded_items: AHashSet<SharedString>,
     separator: &str,
@@ -93,7 +98,7 @@ fn new_key_tree_items(
     let mut items: AHashMap<SharedString, KeyTreeItem> = AHashMap::with_capacity(100);
 
     for (key, key_type) in keys {
-        if !keyword.is_empty() && !key.contains(keyword.as_str()) {
+        if !key_matches_filter_terms(key.as_str(), &filter_terms) {
             continue;
         }
         // no colon in the key, it's a simple key
@@ -172,6 +177,12 @@ fn new_key_tree_items(
     build_sorted_list("", &mut children_map, &mut result);
 
     result
+}
+
+fn key_matches_filter_terms(key: &str, filter_terms: &[SharedString]) -> bool {
+    filter_terms
+        .iter()
+        .all(|term| term.is_empty() || key.contains(term.as_str()))
 }
 
 struct KeyTreeDelegate {
@@ -385,6 +396,12 @@ pub struct ZedisKeyTree {
     /// Input field state for keyword filtering
     keyword_state: Entity<InputState>,
 
+    /// Additional local-only filter inputs applied to already loaded keys.
+    local_filters: Vec<LocalFilterInput>,
+
+    /// Monotonic token used to drop stale async tree builds.
+    tree_build_generation: u64,
+
     /// Whether to enter add key mode
     should_enter_add_key_mode: Option<bool>,
 
@@ -419,11 +436,9 @@ impl ZedisKeyTree {
                 ServerEvent::ServerSelected(_, _) => {
                     this.reset(cx);
                 }
-                ServerEvent::EditonActionTriggered(action) => {
-                    if action == &EditorAction::Create {
-                        this.should_enter_add_key_mode = Some(true);
-                        cx.notify();
-                    }
+                ServerEvent::EditonActionTriggered(action) if action == &EditorAction::Create => {
+                    this.should_enter_add_key_mode = Some(true);
+                    cx.notify();
                 }
                 ServerEvent::KeySelectionChanged => {
                     let selected_count = this.server_state.read(cx).selected_keys_count();
@@ -489,6 +504,8 @@ impl ZedisKeyTree {
             },
             key_tree_list_state,
             keyword_state,
+            local_filters: Vec::new(),
+            tree_build_generation: 0,
             server_state,
             should_enter_add_key_mode: None,
             right_clicked_key: None,
@@ -502,9 +519,12 @@ impl ZedisKeyTree {
         this
     }
 
-    fn reset(&mut self, _cx: &mut Context<Self>) {
+    fn reset(&mut self, cx: &mut Context<Self>) {
         self.state = KeyTreeState::default();
+        self.local_filters.clear();
         self.right_clicked_key = None;
+        debug!("Reset key tree local filter chain");
+        cx.notify();
     }
 
     /// Focuses the keyword search input field.
@@ -516,6 +536,73 @@ impl ZedisKeyTree {
     fn reset_expand(&mut self, _cx: &mut Context<Self>) {
         self.state.expanded_items.clear();
         self.state.scroll_to_index = Some(IndexPath::new(0));
+    }
+
+    fn active_filter_terms(&self, cx: &App) -> Vec<SharedString> {
+        let mut terms = Vec::with_capacity(self.local_filters.len() + 1);
+        if !self.state.keyword.is_empty() {
+            terms.push(self.state.keyword.clone());
+        }
+        for filter in &self.local_filters {
+            let value = filter.input.read(cx).value();
+            let trimmed = value.as_str().trim();
+            if !trimmed.is_empty() {
+                terms.push(trimmed.to_string().into());
+            }
+        }
+        terms
+    }
+
+    fn handle_local_filter_change(&mut self, cx: &mut Context<Self>) {
+        let filter_terms = self.active_filter_terms(cx);
+        debug!(
+            filter_count = filter_terms.len(),
+            local_filter_count = self.local_filters.len(),
+            "Key tree local filter changed"
+        );
+        self.update_key_tree(true, cx);
+    }
+
+    fn add_local_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let filter_index = self.local_filters.len();
+        let filter_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .clean_on_escape()
+                .placeholder(i18n_key_tree(cx, "secondary_filter_placeholder"))
+        });
+        let subscription = cx.subscribe_in(&filter_state, window, |view, _, event, _, cx| match event {
+            InputEvent::Change | InputEvent::PressEnter { .. } => {
+                view.handle_local_filter_change(cx);
+            }
+            _ => {}
+        });
+        self.local_filters.push(LocalFilterInput {
+            input: filter_state.clone(),
+            _subscription: subscription,
+        });
+        filter_state.update(cx, |state, cx| {
+            state.focus(window, cx);
+        });
+        debug!(
+            filter_index,
+            filter_count = self.local_filters.len(),
+            "Added key tree local filter"
+        );
+        cx.notify();
+    }
+
+    fn remove_local_filter(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.local_filters.len() {
+            return;
+        }
+        self.local_filters.remove(index);
+        debug!(
+            filter_index = index,
+            filter_count = self.local_filters.len(),
+            "Removed key tree local filter"
+        );
+        self.update_key_tree(true, cx);
+        cx.notify();
     }
 
     /// Update the key tree structure when server state changes
@@ -542,7 +629,9 @@ impl ZedisKeyTree {
         let expanded_items = self.state.expanded_items.clone();
 
         let view_handle = cx.entity().downgrade();
-        let keyword = self.state.keyword.clone();
+        let filter_terms = self.active_filter_terms(cx);
+        self.tree_build_generation = self.tree_build_generation.wrapping_add(1);
+        let build_generation = self.tree_build_generation;
 
         self.key_tree_list_state.update(cx, move |_state, cx| {
             let app_state = cx.global::<ZedisGlobalStore>().value(cx);
@@ -553,7 +642,7 @@ impl ZedisKeyTree {
                     let start = std::time::Instant::now();
                     let items = new_key_tree_items(
                         keys_snapshot,
-                        keyword,
+                        filter_terms,
                         expand_all,
                         expanded_items,
                         &separator,
@@ -564,15 +653,30 @@ impl ZedisKeyTree {
                 });
 
                 let result = task.await;
-                if result.is_empty() {
-                    let _ = view_handle.update(cx, |view: &mut ZedisKeyTree, cx| {
-                        view.reset_expand(cx);
-                    });
+                let result_is_empty = result.is_empty();
+                let should_apply = view_handle
+                    .update(cx, |view: &mut ZedisKeyTree, cx| {
+                        if view.tree_build_generation != build_generation {
+                            debug!(
+                                build_generation,
+                                current_generation = view.tree_build_generation,
+                                "Skip stale key tree build result"
+                            );
+                            return false;
+                        }
+                        if result_is_empty {
+                            view.reset_expand(cx);
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !should_apply {
+                    return;
                 }
-                handle.update(cx, |this, cx| {
+                let _ = handle.update(cx, |this, cx| {
                     this.delegate_mut().items = result;
                     cx.notify();
-                })
+                });
             })
             .detach();
         });
@@ -590,6 +694,11 @@ impl ZedisKeyTree {
 
         let keyword = self.keyword_state.read(cx).value();
         self.state.keyword = keyword.clone();
+        debug!(
+            keyword_len = keyword.as_str().len(),
+            local_filter_count = self.local_filters.len(),
+            "Submitting key tree filter"
+        );
         self.server_state.update(cx, move |handle, cx| {
             handle.handle_filter(keyword, cx);
         });
@@ -604,6 +713,11 @@ impl ZedisKeyTree {
 
         let keyword = self.keyword_state.read(cx).value();
         self.state.keyword = keyword.clone();
+        debug!(
+            keyword_len = keyword.as_str().len(),
+            local_filter_count = self.local_filters.len(),
+            "Refreshing key tree filter chain"
+        );
         self.server_state.update(cx, move |handle, cx| {
             handle.refresh_keys(keyword, cx);
         });
@@ -956,9 +1070,14 @@ impl ZedisKeyTree {
         let server_state_keyword = server_state.keyword().clone();
         // Sync input field when server changes OR when keyword changes (e.g., after async restore)
         if server_id != self.state.server_id.as_str() || server_state_keyword != self.state.keyword {
+            let server_changed = server_id != self.state.server_id.as_str();
             self.state.server_id = server_id.to_string().into();
             // Sync input field with server's cached keyword
             self.state.keyword = server_state_keyword.clone();
+            if server_changed {
+                self.local_filters.clear();
+                debug!(server_id, "Cleared key tree local filters after server change");
+            }
             self.keyword_state.update(cx, |state, cx| {
                 state.set_value(server_state_keyword, window, cx);
             });
@@ -1006,6 +1125,34 @@ impl ZedisKeyTree {
             .prefix(query_mode_dropdown)
             .suffix(search_btn)
             .cleanable(true);
+        let local_filter_inputs = self
+            .local_filters
+            .iter()
+            .enumerate()
+            .map(|(index, filter)| {
+                let remove_btn = Button::new(("key-tree-local-filter-remove", index))
+                    .ghost()
+                    .tooltip(i18n_key_tree(cx, "remove_filter_tooltip"))
+                    .icon(IconName::Close)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.remove_local_filter(index, cx);
+                    }));
+
+                Input::new(&filter.input)
+                    .w(px(128.0))
+                    .flex_shrink_0()
+                    .suffix(remove_btn)
+                    .cleanable(true)
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let add_filter_btn = Button::new("key-tree-add-filter-btn")
+            .outline()
+            .tooltip(i18n_key_tree(cx, "add_filter_tooltip"))
+            .icon(IconName::Plus)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.add_local_filter(window, cx);
+            }));
         // Refresh button
         let refresh_btn = Button::new("key-tree-refresh-btn")
             .outline()
@@ -1021,6 +1168,8 @@ impl ZedisKeyTree {
             .border_b_1()
             .border_color(cx.theme().border)
             .child(keyword_input)
+            .children(local_filter_inputs)
+            .child(add_filter_btn)
             .child(refresh_btn)
             .child(
                 Button::new("key-tree-add-btn")
@@ -1065,6 +1214,13 @@ impl Render for ZedisKeyTree {
                     input_focus.dispatch_action(&SelectAll, window, cx);
                     return;
                 }
+                for filter in &this.local_filters {
+                    let filter_focus = filter.input.read(cx).focus_handle(cx);
+                    if filter_focus.is_focused(window) {
+                        filter_focus.dispatch_action(&SelectAll, window, cx);
+                        return;
+                    }
+                }
                 let keys: Vec<SharedString> = this
                     .key_tree_list_state
                     .read(cx)
@@ -1091,5 +1247,43 @@ impl Render for ZedisKeyTree {
                 // Step 2: Update local UI state
                 this.state.query_mode = new_mode;
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ss(value: &str) -> SharedString {
+        value.to_string().into()
+    }
+
+    #[test]
+    fn filters_key_tree_items_by_all_terms() {
+        let keys = vec![
+            (ss("CMC_{DCC0001}_sg.device"), KeyType::String),
+            (ss("CMC_{DCC0001}_sg.bus"), KeyType::String),
+            (ss("CMC_{DCC0002}_sg.device"), KeyType::String),
+        ];
+
+        let items = new_key_tree_items(
+            keys,
+            vec![ss("DCC0001"), ss("sg.device")],
+            true,
+            AHashSet::new(),
+            ":",
+            10,
+        );
+
+        let ids = items.iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["CMC_{DCC0001}_sg.device"]);
+    }
+
+    #[test]
+    fn ignores_empty_filter_terms() {
+        assert!(key_matches_filter_terms(
+            "CMC_{DCC0001}_sg.device",
+            &[SharedString::default(), ss("DCC0001")]
+        ));
     }
 }
