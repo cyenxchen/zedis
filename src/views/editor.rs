@@ -23,6 +23,7 @@ use gpui::{App, ClipboardItem, Entity, FocusHandle, SharedString, Subscription, 
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, WindowExt,
     button::Button,
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     label::Label,
@@ -264,11 +265,18 @@ impl ZedisEditor {
         window.open_dialog(cx, move |dialog, _, cx| {
             let locale = cx.global::<ZedisGlobalStore>().read(cx).locale();
             let message = t!("editor.delete_key_prompt", key = key, locale = locale).to_string();
+            let confirm_label = i18n_common(cx, "confirm");
+            let cancel_label = i18n_common(cx, "cancel");
             let server_state = server_state.clone();
             let key = key.clone();
 
             dialog
                 .confirm()
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(confirm_label)
+                        .cancel_text(cancel_label),
+                )
                 .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
                 .on_ok(move |_, window, cx| {
                     let key = key.clone();

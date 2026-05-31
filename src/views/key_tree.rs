@@ -30,6 +30,7 @@ use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, StyledExt, WindowExt,
     button::{Button, ButtonVariants, DropdownButton},
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, SelectAll},
     label::Label,
@@ -209,11 +210,18 @@ fn confirm_delete_selected_keys(
             locale = locale
         )
         .to_string();
+        let confirm_label = i18n_common(cx, "confirm");
+        let cancel_label = i18n_common(cx, "cancel");
         let server_state = server_state.clone();
         let keys = keys.clone();
 
         dialog
             .confirm()
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text(confirm_label)
+                    .cancel_text(cancel_label),
+            )
             .child(v_flex().w_full().max_h(px(200.0)).overflow_y_scrollbar().child(message))
             .on_ok(move |_, window, cx| {
                 let keys = keys.clone();
