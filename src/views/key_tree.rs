@@ -68,8 +68,11 @@ struct KeyTreeState {
     expanded_items: AHashSet<SharedString>,
     /// Index path to scroll to when the tree is updated
     scroll_to_index: Option<IndexPath>,
-    /// Anchor row index for Shift+click range selection
-    anchor_index: Option<usize>,
+    /// Anchor key for Shift+click range selection.
+    ///
+    /// The visible tree can be rebuilt while SCAN keeps loading keys, so a stored
+    /// row index may point at a different key by the next click.
+    anchor_key: Option<SharedString>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -186,6 +189,28 @@ fn key_matches_filter_terms(key: &str, filter_terms: &[SharedString]) -> bool {
     filter_terms
         .iter()
         .all(|term| term.is_empty() || key.contains(term.as_str()))
+}
+
+fn visible_key_range(
+    items: &[KeyTreeItem],
+    anchor_key: &SharedString,
+    end_key: &SharedString,
+) -> Option<(usize, usize, Vec<SharedString>)> {
+    let anchor_row = items
+        .iter()
+        .position(|item| !item.is_folder && item.id.as_str() == anchor_key.as_str())?;
+    let end_row = items
+        .iter()
+        .position(|item| !item.is_folder && item.id.as_str() == end_key.as_str())?;
+    let start = anchor_row.min(end_row);
+    let end = anchor_row.max(end_row);
+    let keys = items[start..=end]
+        .iter()
+        .filter(|item| !item.is_folder)
+        .map(|item| item.id.clone())
+        .collect::<Vec<_>>();
+
+    Some((start, end, keys))
 }
 
 fn confirm_delete_selected_keys(
@@ -333,22 +358,10 @@ impl ListDelegate for KeyTreeDelegate {
             odd_bg
         };
 
-        let row_index = ix.row;
         // Build the inner content
         let inner_content = h_flex()
             .w_full()
             .gap_2()
-            // Handle Shift+click for range selection
-            .on_mouse_down(MouseButton::Left, {
-                let key_id = key_id.clone();
-                let view = view.clone();
-                move |event, _, cx| {
-                    let shift_pressed = event.modifiers.shift;
-                    let _ = view.update(cx, |v, cx| {
-                        v.handle_item_click(row_index, &key_id, is_folder, shift_pressed, cx);
-                    });
-                }
-            })
             // Bubble phase: set right_clicked_key for non-folder keys
             // (capture phase already cleared it, so folder clicks stay cleared)
             .when(!is_folder, |this| {
@@ -397,6 +410,16 @@ impl ListDelegate for KeyTreeDelegate {
             ListItem::new(ix)
                 .w_full()
                 .bg(bg)
+                .on_click({
+                    let key_id = key_id.clone();
+                    let view = view.clone();
+                    move |event, _, cx| {
+                        let shift_pressed = event.modifiers().shift;
+                        let _ = view.update(cx, |v, cx| {
+                            v.handle_item_click(&key_id, is_folder, shift_pressed, cx);
+                        });
+                    }
+                })
                 .when(is_multi_selected, |this| {
                     this.border_1().border_color(cx.theme().list_active_border).rounded_sm()
                 })
@@ -976,6 +999,7 @@ impl ZedisKeyTree {
     ) {
         if is_folder {
             if sync_selected_keys {
+                self.state.anchor_key = None;
                 debug!(folder = %item_id, "Clear key tree key selection from folder list event");
                 self.server_state.update(cx, |state, cx| {
                     state.clear_selected_keys(cx);
@@ -1004,6 +1028,7 @@ impl ZedisKeyTree {
                 });
             }
             if sync_selected_keys {
+                self.state.anchor_key = Some(item_id.clone());
                 debug!(key = %item_id, "Sync key tree single selection from list event");
                 self.server_state.update(cx, |state, cx| {
                     state.set_single_selected_key(item_id.clone(), cx);
@@ -1015,15 +1040,13 @@ impl ZedisKeyTree {
     /// Handle item click with optional Shift key for range selection
     fn handle_item_click(
         &mut self,
-        row_index: usize,
         key_id: &SharedString,
         is_folder: bool,
         shift_pressed: bool,
         cx: &mut Context<Self>,
     ) {
         if is_folder {
-            // For folders, just update anchor and handle normally
-            self.state.anchor_index = Some(row_index);
+            self.state.anchor_key = None;
             // Clear multi-selection when clicking folders
             self.server_state.update(cx, |state, cx| {
                 state.clear_selected_keys(cx);
@@ -1031,12 +1054,13 @@ impl ZedisKeyTree {
             return;
         }
 
-        if shift_pressed && self.state.anchor_index.is_some() {
+        if shift_pressed && self.state.anchor_key.is_some() {
             // Shift+click: perform range selection
-            self.handle_range_selection(row_index, cx);
+            self.handle_range_selection(key_id, cx);
         } else {
             // Normal click: update anchor and set single selection
-            self.state.anchor_index = Some(row_index);
+            self.state.anchor_key = Some(key_id.clone());
+            debug!(key = %key_id, "Set key tree single selection from normal click");
             self.server_state.update(cx, |state, cx| {
                 state.set_single_selected_key(key_id.clone(), cx);
             });
@@ -1045,26 +1069,27 @@ impl ZedisKeyTree {
     }
 
     /// Handle range selection when Shift+click is detected
-    fn handle_range_selection(&mut self, end_row: usize, cx: &mut Context<Self>) {
-        let Some(anchor_row) = self.state.anchor_index else {
+    fn handle_range_selection(&mut self, end_key: &SharedString, cx: &mut Context<Self>) {
+        let Some(anchor_key) = self.state.anchor_key.clone() else {
             return;
         };
 
-        let start = anchor_row.min(end_row);
-        let end = anchor_row.max(end_row);
-
-        // Collect all non-folder keys in the range
-        let keys_in_range: Vec<SharedString> = self
-            .key_tree_list_state
-            .read(cx)
-            .delegate()
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| *idx >= start && *idx <= end)
-            .filter(|(_, item)| !item.is_folder)
-            .map(|(_, item)| item.id.clone())
-            .collect();
+        let Some((start, end, keys_in_range)) = visible_key_range(
+            &self.key_tree_list_state.read(cx).delegate().items,
+            &anchor_key,
+            end_key,
+        ) else {
+            debug!(
+                anchor_key = %anchor_key,
+                end_key = %end_key,
+                "Reset key tree range selection because the anchor or target key is no longer visible"
+            );
+            self.state.anchor_key = Some(end_key.clone());
+            self.server_state.update(cx, |state, cx| {
+                state.set_single_selected_key(end_key.clone(), cx);
+            });
+            return;
+        };
 
         if keys_in_range.is_empty() {
             return;
@@ -1073,6 +1098,8 @@ impl ZedisKeyTree {
         debug!(
             start_row = start,
             end_row = end,
+            anchor_key = %anchor_key,
+            end_key = %end_key,
             selected_count = keys_in_range.len(),
             "key_tree range selection"
         );
@@ -1397,5 +1424,54 @@ mod tests {
             "CMC_{DCC0001}_sg.device",
             &[SharedString::default(), ss("DCC0001")]
         ));
+    }
+
+    #[test]
+    fn visible_key_range_uses_key_ids_and_skips_folders() {
+        let items = vec![
+            KeyTreeItem {
+                id: ss("group"),
+                label: ss("group"),
+                is_folder: true,
+                ..Default::default()
+            },
+            KeyTreeItem {
+                id: ss("group:a"),
+                label: ss("a"),
+                ..Default::default()
+            },
+            KeyTreeItem {
+                id: ss("group:b"),
+                label: ss("b"),
+                ..Default::default()
+            },
+            KeyTreeItem {
+                id: ss("other"),
+                label: ss("other"),
+                is_folder: true,
+                ..Default::default()
+            },
+            KeyTreeItem {
+                id: ss("other:c"),
+                label: ss("c"),
+                ..Default::default()
+            },
+        ];
+
+        let (_, _, keys) =
+            visible_key_range(&items, &ss("group:a"), &ss("other:c")).expect("test: visible keys should be found");
+
+        assert_eq!(keys, vec![ss("group:a"), ss("group:b"), ss("other:c")]);
+    }
+
+    #[test]
+    fn visible_key_range_returns_none_when_anchor_is_no_longer_visible() {
+        let items = vec![KeyTreeItem {
+            id: ss("current"),
+            label: ss("current"),
+            ..Default::default()
+        }];
+
+        assert!(visible_key_range(&items, &ss("stale"), &ss("current")).is_none());
     }
 }

@@ -760,6 +760,11 @@ fn main() {
                 |window, cx| {
                     #[cfg(target_os = "macos")]
                     window.on_window_should_close(cx, move |_window, cx| {
+                        if cfg!(debug_assertions) {
+                            info!("quitting debug zedis instance after main window close");
+                            cx.quit();
+                            return true;
+                        }
                         cx.hide();
                         false
                     });
