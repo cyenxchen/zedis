@@ -22,7 +22,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -158,9 +158,11 @@ struct EncryptedPresetCredential {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZedisAppState {
+    #[serde(default)]
     route: Route,
     locale: Option<String>,
     bounds: Option<Bounds<Pixels>>,
+    #[serde(default)]
     key_tree_width: Pixels,
     #[serde(default)]
     servers_layout: ServersLayout,
@@ -219,6 +221,9 @@ impl ZedisAppState {
         let path = get_or_create_server_config()?;
         info!(path = ?path, "Loading config file");
         let value = std::fs::read_to_string(&path)?;
+        if value.trim().is_empty() {
+            warn!(path = ?path, "Config file is empty, using default app state");
+        }
         let mut state: Self = toml::from_str(&value).map_err(|e| {
             error!(error = %e, path = ?path, "Failed to parse config file");
             e

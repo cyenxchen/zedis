@@ -15,6 +15,7 @@
 use crate::error::Error;
 use std::path::Path;
 use std::process::Command;
+#[cfg(target_os = "macos")]
 use tracing::{debug, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;

@@ -17,7 +17,7 @@ use chrono::{Datelike, Local};
 use gpui::{
     App, Bounds, TextAlign, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, prelude::*, px, size,
 };
-use gpui_component::{ActiveTheme, Icon, Root, h_flex, label::Label, v_flex};
+use gpui_component::{ActiveTheme, Icon, Root, TitleBar, h_flex, label::Label, v_flex};
 use tracing::info;
 
 struct About;
@@ -36,11 +36,20 @@ impl Render for About {
             .size_full()
             .bg(cx.theme().background)
             .child(
+                TitleBar::new().child(
+                    h_flex()
+                        .id("about-title")
+                        .h_full()
+                        .items_center()
+                        .child(Label::new(i18n_about(cx, "title")).text_sm()),
+                ),
+            )
+            .child(
                 v_flex()
                     .size_full()
                     .items_center()
                     .justify_start()
-                    .pt_12()
+                    .pt_8()
                     .pb_6()
                     .px_6()
                     .gap_4()
@@ -96,7 +105,7 @@ pub fn open_about_window(cx: &mut App) {
 
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
-        is_movable: false,
+        is_movable: true,
         is_resizable: false,
 
         titlebar: Some(TitlebarOptions {

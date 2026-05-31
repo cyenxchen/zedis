@@ -13,10 +13,32 @@ use gpui::{
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use gpui_component::{ActiveTheme, Root, Theme, ThemeMode, WindowExt, h_flex, notification::Notification, v_flex};
+use single_instance::SingleInstance;
 use std::fs::OpenOptions;
+#[cfg(target_os = "windows")]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::{env, str::FromStr};
-use tracing::{Level, error, info};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber::FmtSubscriber;
+#[cfg(target_os = "windows")]
+use windows::{
+    Win32::{
+        Foundation::{BOOL, CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, WAIT_OBJECT_0},
+        System::Threading::{
+            AttachThreadInput, CreateEventW, GetCurrentProcessId, GetCurrentThreadId, INFINITE, SetEvent,
+            WaitForSingleObject,
+        },
+        UI::WindowsAndMessaging::{
+            ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow,
+            GetWindowTextW, GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, IsWindowVisible,
+            SW_RESTORE, SW_SHOW, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindow,
+        },
+    },
+    core::HSTRING,
+};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -25,6 +47,14 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 rust_i18n::i18n!("locales", fallback = "en");
 
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
+const APP_WINDOW_TITLE: &str = "Zedis";
+const SINGLE_INSTANCE_ID: &str = "com.bigtree.zedis";
+#[cfg(target_os = "windows")]
+const WINDOWS_WINDOW_CLASS_NAME: &str = "Zed::Window";
+#[cfg(target_os = "windows")]
+const WINDOWS_WINDOW_TITLE: &str = APP_WINDOW_TITLE;
+#[cfg(target_os = "windows")]
+const SINGLE_INSTANCE_ACTIVATION_EVENT: &str = "Local\\com.bigtree.zedis.activate";
 
 mod assets;
 mod components;
@@ -44,12 +74,22 @@ pub struct Zedis {
     content: Entity<ZedisContent>,
     title_bar: Option<Entity<ZedisTitleBar>>,
     theme_update_task: Option<Task<()>>,
+    _activation_listener_task: Option<Task<()>>,
 }
 
 impl Zedis {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, server_state: Entity<ZedisServerState>) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        server_state: Entity<ZedisServerState>,
+        #[cfg(target_os = "windows")] activation_event: Option<ActivationEvent>,
+    ) -> Self {
         let sidebar = cx.new(|cx| ZedisSidebar::new(server_state.clone(), window, cx));
         let content = cx.new(|cx| ZedisContent::new(server_state.clone(), window, cx));
+        #[cfg(target_os = "windows")]
+        let _activation_listener_task = activation_event.map(|event| start_activation_listener(event, cx));
+        #[cfg(not(target_os = "windows"))]
+        let _activation_listener_task = None;
         cx.subscribe(&server_state, |this, _server_state, event, cx| {
             match event {
                 ServerEvent::Notification(e) => {
@@ -95,6 +135,7 @@ impl Zedis {
             pending_notification: None,
             title_bar,
             theme_update_task: None,
+            _activation_listener_task,
             last_bounds: Bounds::default(),
         }
     }
@@ -302,9 +343,339 @@ fn init_logger() {
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 }
 
+#[cfg(target_os = "macos")]
+fn single_instance_key() -> String {
+    let lock_path = crate::helpers::get_or_create_config_dir()
+        .map(|dir| dir.join(format!("{SINGLE_INSTANCE_ID}.lock")))
+        .unwrap_or_else(|e| {
+            let fallback = env::temp_dir().join(format!("{SINGLE_INSTANCE_ID}.lock"));
+            tracing::warn!(error = %e, path = %fallback.display(), "failed to use config dir for single instance lock");
+            fallback
+        });
+
+    lock_path.to_string_lossy().into_owned()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn single_instance_key() -> String {
+    SINGLE_INSTANCE_ID.to_string()
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) struct ActivationEvent {
+    handle: HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for ActivationEvent {}
+
+#[cfg(target_os = "windows")]
+impl Drop for ActivationEvent {
+    fn drop(&mut self) {
+        if let Err(e) = unsafe { CloseHandle(self.handle) } {
+            warn!(error = %e, "failed to close single instance activation event handle");
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_activation_event() -> Option<ActivationEvent> {
+    let event_name = HSTRING::from(SINGLE_INSTANCE_ACTIVATION_EVENT);
+    let event = unsafe { CreateEventW(None, false, false, &event_name) };
+    match event {
+        Ok(handle) => {
+            info!(
+                event = SINGLE_INSTANCE_ACTIVATION_EVENT,
+                "opened single instance activation event"
+            );
+            Some(ActivationEvent { handle })
+        }
+        Err(e) => {
+            error!(error = %e, event = SINGLE_INSTANCE_ACTIVATION_EVENT, "failed to open single instance activation event");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_existing_activation_event() -> Option<ActivationEvent> {
+    let event_name = HSTRING::from(SINGLE_INSTANCE_ACTIVATION_EVENT);
+    let event = unsafe { CreateEventW(None, false, false, &event_name) };
+    match event {
+        Ok(handle) => {
+            let event = ActivationEvent { handle };
+            if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+                Some(event)
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            error!(error = %e, event = SINGLE_INSTANCE_ACTIVATION_EVENT, "failed to open existing single instance activation event");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn notify_existing_instance() {
+    if restore_existing_window_from_new_process() {
+        return;
+    }
+
+    let mut event = None;
+    for _ in 0..10 {
+        event = open_existing_activation_event();
+        if event.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let Some(event) = event else {
+        warn!(
+            event = SINGLE_INSTANCE_ACTIVATION_EVENT,
+            "existing zedis activation event was not ready"
+        );
+        return;
+    };
+
+    if let Err(e) = unsafe { AllowSetForegroundWindow(ASFW_ANY) } {
+        warn!(error = %e, "failed to allow existing zedis instance to set foreground window");
+    } else {
+        info!("allowed existing zedis instance to set foreground window");
+    }
+
+    if let Err(e) = unsafe { SetEvent(event.handle) } {
+        error!(error = %e, event = SINGLE_INSTANCE_ACTIVATION_EVENT, "failed to notify existing zedis instance");
+        return;
+    }
+    info!(
+        event = SINGLE_INSTANCE_ACTIVATION_EVENT,
+        "notified existing zedis instance to activate"
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn notify_existing_instance() {}
+
+#[cfg(target_os = "windows")]
+struct ExistingWindowSearch {
+    current_pid: u32,
+    hwnd: HWND,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn enum_existing_zedis_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return BOOL(1);
+    }
+
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    let search = unsafe { &mut *(lparam.0 as *mut ExistingWindowSearch) };
+    if pid == 0 || pid == search.current_pid {
+        return BOOL(1);
+    }
+
+    let mut class_name = [0u16; 64];
+    let class_len = unsafe { GetClassNameW(hwnd, &mut class_name) };
+    if class_len <= 0 || String::from_utf16_lossy(&class_name[..class_len as usize]) != WINDOWS_WINDOW_CLASS_NAME {
+        return BOOL(1);
+    }
+
+    let mut title = [0u16; 64];
+    let title_len = unsafe { GetWindowTextW(hwnd, &mut title) };
+    if title_len <= 0 || String::from_utf16_lossy(&title[..title_len as usize]) != WINDOWS_WINDOW_TITLE {
+        return BOOL(1);
+    }
+
+    search.hwnd = hwnd;
+    BOOL(0)
+}
+
+#[cfg(target_os = "windows")]
+fn find_existing_zedis_window() -> Option<HWND> {
+    let mut search = ExistingWindowSearch {
+        current_pid: unsafe { GetCurrentProcessId() },
+        hwnd: HWND::default(),
+    };
+
+    let result = unsafe {
+        EnumWindows(
+            Some(enum_existing_zedis_window),
+            LPARAM(&mut search as *mut ExistingWindowSearch as isize),
+        )
+    };
+    if let Err(e) = result {
+        error!(error = %e, "failed to enumerate windows for existing zedis instance");
+    }
+
+    if search.hwnd.0 == 0 { None } else { Some(search.hwnd) }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_existing_window_from_new_process() -> bool {
+    let Some(hwnd) = find_existing_zedis_window() else {
+        warn!("no existing zedis window found for direct activation");
+        return false;
+    };
+
+    let current_thread_id = unsafe { GetCurrentThreadId() };
+    let target_thread_id = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    let foreground_hwnd = unsafe { GetForegroundWindow() };
+    let foreground_thread_id = if foreground_hwnd.0 == 0 {
+        0
+    } else {
+        unsafe { GetWindowThreadProcessId(foreground_hwnd, None) }
+    };
+
+    let attached_target = target_thread_id != 0
+        && target_thread_id != current_thread_id
+        && unsafe { AttachThreadInput(current_thread_id, target_thread_id, true).as_bool() };
+    let attached_foreground = foreground_thread_id != 0
+        && foreground_thread_id != current_thread_id
+        && foreground_thread_id != target_thread_id
+        && unsafe { AttachThreadInput(current_thread_id, foreground_thread_id, true).as_bool() };
+
+    let was_minimized = unsafe { IsIconic(hwnd).as_bool() };
+    if was_minimized {
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+    } else {
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+    }
+
+    if let Err(e) = unsafe { BringWindowToTop(hwnd) } {
+        warn!(error = %e, "failed to bring existing zedis window to top");
+    }
+    if let Err(e) = unsafe { SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW) } {
+        warn!(error = %e, "failed to temporarily set existing zedis window topmost");
+    }
+    if let Err(e) = unsafe {
+        SetWindowPos(
+            hwnd,
+            HWND_NOTOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+    } {
+        warn!(error = %e, "failed to restore existing zedis window z-order");
+    }
+
+    let foreground_set = unsafe { SetForegroundWindow(hwnd).as_bool() };
+
+    if attached_foreground {
+        let _ = unsafe { AttachThreadInput(current_thread_id, foreground_thread_id, false) };
+    }
+    if attached_target {
+        let _ = unsafe { AttachThreadInput(current_thread_id, target_thread_id, false) };
+    }
+
+    info!(
+        foreground_set,
+        was_minimized, attached_target, attached_foreground, "directly activated existing zedis window"
+    );
+    foreground_set
+}
+
+struct SingleInstanceGuard {
+    _instance: SingleInstance,
+    #[cfg(target_os = "windows")]
+    activation_event: Option<ActivationEvent>,
+}
+
+fn acquire_single_instance() -> Option<SingleInstanceGuard> {
+    let key = single_instance_key();
+    match SingleInstance::new(&key) {
+        Ok(instance) if instance.is_single() => {
+            info!(key = %key, "acquired single instance lock");
+            Some(SingleInstanceGuard {
+                _instance: instance,
+                #[cfg(target_os = "windows")]
+                activation_event: open_activation_event(),
+            })
+        }
+        Ok(_) => {
+            info!(key = %key, "another zedis instance is already running");
+            notify_existing_instance();
+            None
+        }
+        Err(e) => {
+            error!(error = %e, key = %key, "failed to acquire single instance lock");
+            None
+        }
+    }
+}
+
+fn activate_existing_windows(cx: &mut App) {
+    let windows = cx.windows();
+    if windows.is_empty() {
+        warn!("single instance activation requested but no zedis windows are open");
+        return;
+    }
+
+    info!(window_count = windows.len(), "activating existing zedis windows");
+    for window in windows {
+        if let Err(e) = window.update(cx, |_, window, _| window.activate_window()) {
+            warn!(error = %e, "failed to activate zedis window");
+        }
+    }
+    cx.activate(true);
+}
+
+#[cfg(target_os = "windows")]
+fn start_activation_listener(event: ActivationEvent, cx: &mut Context<Zedis>) -> Task<()> {
+    let activation_requested = Arc::new(AtomicBool::new(false));
+    let listener_flag = activation_requested.clone();
+
+    let spawn_result = std::thread::Builder::new()
+        .name("zedis-single-instance-activation-listener".to_string())
+        .spawn(move || {
+            loop {
+                let wait_result = unsafe { WaitForSingleObject(event.handle, INFINITE) };
+                if wait_result == WAIT_OBJECT_0 {
+                    listener_flag.store(true, Ordering::Release);
+                } else {
+                    error!(wait_result = ?wait_result, "single instance activation listener stopped");
+                    break;
+                }
+            }
+        });
+
+    if let Err(e) = spawn_result {
+        error!(error = %e, "failed to start single instance activation listener");
+    }
+
+    cx.spawn(async move |_, cx| {
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
+            if activation_requested.swap(false, Ordering::AcqRel) {
+                info!("single instance activation request received");
+                if let Err(e) = cx.update(activate_existing_windows) {
+                    error!(error = %e, "failed to process single instance activation request");
+                }
+            }
+        }
+    })
+}
+
 fn main() {
     init_logger();
+    let Some(single_instance) = acquire_single_instance() else {
+        return;
+    };
+    let SingleInstanceGuard {
+        _instance: _single_instance,
+        #[cfg(target_os = "windows")]
+        activation_event,
+    } = single_instance;
     let app = Application::new().with_assets(assets::Assets);
+    app.on_reopen(activate_existing_windows);
     let app_state = ZedisAppState::try_new().unwrap_or_else(|e| {
         error!(error = %e, "Failed to load app state, using default state");
         ZedisAppState::new()
@@ -371,12 +742,14 @@ fn main() {
 
         let server_state = cx.new(|_| server_state.clone());
         cx.spawn(async move |cx| {
+            #[cfg(target_os = "windows")]
+            let mut activation_event = activation_event;
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(window_bounds)),
                     #[cfg(not(target_os = "linux"))]
                     titlebar: Some(TitlebarOptions {
-                        title: None,
+                        title: Some(APP_WINDOW_TITLE.into()),
                         appears_transparent: true,
                         traffic_light_position: Some(gpui::point(px(9.0), px(9.0))),
                     }),
@@ -390,7 +763,16 @@ fn main() {
                         cx.hide();
                         false
                     });
-                    let zedis_view = cx.new(|cx| Zedis::new(window, cx, server_state));
+                    let zedis_view = cx.new(|cx| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            Zedis::new(window, cx, server_state, activation_event.take())
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            Zedis::new(window, cx, server_state)
+                        }
+                    });
                     cx.new(|cx| Root::new(zedis_view, window, cx))
                 },
             )?;
