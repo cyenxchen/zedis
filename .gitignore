@@ -33,3 +33,4 @@ cargo-sources.json
 .claude/
 .DS_Store
 .idea/
+*.log
