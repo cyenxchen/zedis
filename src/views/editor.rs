@@ -130,6 +130,9 @@ impl ZedisEditor {
                 ServerEvent::ListEditDialogReady(index, bytes) => {
                     this.handle_list_edit_dialog_ready(*index, bytes, server_state, window, cx);
                 }
+                ServerEvent::HashEditDialogReady(key, field, bytes) => {
+                    this.handle_hash_edit_dialog_ready(key.clone(), field.clone(), bytes, server_state, window, cx);
+                }
                 _ => {}
             },
         ));
@@ -230,6 +233,54 @@ impl ZedisEditor {
         open_edit_value_dialog(
             EditValueDialogParams {
                 key,
+                bytes: bytes::Bytes::from(bytes.to_vec()),
+                server_state: server_state.clone(),
+                on_save: Some(on_save),
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Handle hash edit dialog ready event.
+    /// Opens the edit value dialog with custom save handler for hash fields.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn handle_hash_edit_dialog_ready(
+        &mut self,
+        key: SharedString,
+        field: SharedString,
+        bytes: &[u8],
+        server_state: &Entity<ZedisServerState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if server_state.read(cx).key().as_ref() != Some(&key) {
+            let current_key = server_state.read(cx).key().unwrap_or_default();
+            debug!(
+                expected_key = key.as_str(),
+                current_key = current_key.as_str(),
+                field = field.as_str(),
+                "Skip stale Redis hash edit dialog event because selected key changed"
+            );
+            return;
+        }
+
+        let title_key: SharedString = format!("{} / {}", key, field).into();
+        let server_state_clone = server_state.clone();
+
+        let on_save: std::rc::Rc<dyn Fn(bytes::Bytes, &mut Window, &mut gpui::App) -> bool> = std::rc::Rc::new({
+            let key = key.clone();
+            let field = field.clone();
+            move |new_bytes: bytes::Bytes, _window: &mut Window, cx: &mut gpui::App| {
+                server_state_clone.update(cx, |state, cx| {
+                    state.update_hash_value_bytes(key.clone(), field.clone(), new_bytes, cx)
+                })
+            }
+        });
+
+        open_edit_value_dialog(
+            EditValueDialogParams {
+                key: title_key,
                 bytes: bytes::Bytes::from(bytes.to_vec()),
                 server_state: server_state.clone(),
                 on_save: Some(on_save),
