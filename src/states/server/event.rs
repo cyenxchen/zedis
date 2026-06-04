@@ -100,6 +100,9 @@ pub enum ServerTask {
     /// Remove multiple values from a hash
     RemoveHashValues,
 
+    /// Update a value in a hash
+    UpdateHashValue,
+
     /// Save edited value back to Redis
     SaveValue,
 
@@ -150,6 +153,7 @@ impl ServerTask {
             ServerTask::RemoveZsetValue => "remove_zset_value",
             ServerTask::RemoveHashValue => "remove_hash_value",
             ServerTask::RemoveHashValues => "remove_hash_values",
+            ServerTask::UpdateHashValue => "update_hash_value",
             ServerTask::DuplicateKey => "duplicate_key",
             ServerTask::ExportKeys => "export_keys",
             ServerTask::ExportKeyBackup => "export_key_backup",
@@ -220,6 +224,9 @@ pub enum ServerEvent {
 
     /// List item edit dialog ready (index, bytes data)
     ListEditDialogReady(usize, Vec<u8>),
+
+    /// Hash field edit dialog ready (key, field, bytes data)
+    HashEditDialogReady(SharedString, SharedString, Vec<u8>),
 
     /// Prompt user to save preset credential to server config
     /// (server_id, credential)

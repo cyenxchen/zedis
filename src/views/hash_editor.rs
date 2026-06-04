@@ -170,6 +170,23 @@ impl ZedisKvFetcher for ZedisHashValues {
         });
     }
 
+    /// Opens the rich value editor for a HASH field.
+    ///
+    /// The dialog is opened by `ZedisEditor` after the raw field bytes are fetched with HGET.
+    fn handle_edit_dialog(&self, row_ix: usize, _window: &mut Window, cx: &mut App) -> bool {
+        let Some(hash) = self.value.hash_value() else {
+            return false;
+        };
+        let Some((field, _)) = hash.values.get(row_ix).cloned() else {
+            return false;
+        };
+
+        self.server_state.update(cx, |state, cx| {
+            state.fetch_hash_value_for_edit(field, cx);
+        });
+        true
+    }
+
     /// Opens a dialog to add a new field-value pair to the HASH.
     ///
     /// Creates a form with field and value input fields and handles submission

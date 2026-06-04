@@ -28,12 +28,14 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
+    helpers::codec::{CompressionFormat, MAX_DECOMPRESS_BYTES, decompress, detect},
     states::{NotificationAction, ServerEvent, i18n_hash_editor},
 };
+use bytes::Bytes;
 use gpui::{SharedString, prelude::*};
 use redis::cmd;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -52,6 +54,18 @@ fn unique_hash_fields(fields: Vec<SharedString>) -> Vec<SharedString> {
 
 fn is_current_hash_pagination(hash: &RedisHashValue, keyword: Option<&SharedString>, cursor: u64) -> bool {
     hash.keyword.as_ref() == keyword && hash.cursor == cursor
+}
+
+/// Convert raw bytes into the table preview string while preserving compressed data previews.
+fn bytes_to_display_string(bytes: &[u8]) -> String {
+    let detection = detect(bytes);
+    let data = if detection.compression != CompressionFormat::None {
+        decompress(bytes, detection.compression, MAX_DECOMPRESS_BYTES).unwrap_or_else(|_| bytes.to_vec())
+    } else {
+        bytes.to_vec()
+    };
+
+    String::from_utf8_lossy(&data).to_string()
 }
 
 /// Retrieves HASH field-value pairs using Redis HSCAN command for cursor-based pagination.
@@ -166,6 +180,194 @@ impl ZedisServerState {
     pub fn update_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         self.add_or_update_hash_value(new_field, new_value, cx);
     }
+
+    /// Fetch raw bytes for a HASH field and emit an event when the edit dialog can open.
+    pub fn fetch_hash_value_for_edit(&mut self, field: SharedString, cx: &mut Context<Self>) {
+        let Some((key, _)) = self.try_get_mut_key_value() else {
+            return;
+        };
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_for_task = key.clone();
+        let key_for_event = key.clone();
+        let field_clone = field.clone();
+        info!(
+            key = %key,
+            field = %field,
+            "Fetching Redis hash field bytes for dialog editing"
+        );
+
+        self.spawn(
+            ServerTask::UpdateHashValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let bytes: Vec<u8> = cmd("HGET")
+                    .arg(key_for_task.as_str())
+                    .arg(field.as_str())
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(bytes)
+            },
+            move |this, result, cx| {
+                if this.key.as_ref() != Some(&key_for_event) {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    debug!(
+                        expected_key = key_for_event.as_str(),
+                        current_key = current_key.as_str(),
+                        field = field_clone.as_str(),
+                        "Skip stale Redis hash edit dialog because selected key changed"
+                    );
+                    cx.notify();
+                    return;
+                }
+
+                match result {
+                    Ok(bytes) => {
+                        info!(
+                            key = %key_for_event,
+                            field = %field_clone,
+                            bytes_len = bytes.len(),
+                            "Redis hash field bytes are ready for dialog editing"
+                        );
+                        cx.emit(ServerEvent::HashEditDialogReady(key_for_event, field_clone, bytes));
+                    }
+                    Err(err) => {
+                        error!(
+                            key = %key_for_event,
+                            field = %field_clone,
+                            error = %err,
+                            "Failed to fetch Redis hash field bytes for dialog editing"
+                        );
+                        cx.emit(ServerEvent::ErrorOccurred(crate::states::ErrorMessage {
+                            category: "fetch_hash_value_for_edit".into(),
+                            message: err.to_string().into(),
+                            created_at: crate::helpers::unix_ts(),
+                        }));
+                    }
+                }
+                cx.notify();
+            },
+            cx,
+        );
+    }
+
+    /// Update a HASH field with raw bytes from the value edit dialog.
+    pub fn update_hash_value_bytes(
+        &mut self,
+        expected_key: SharedString,
+        field: SharedString,
+        new_bytes: Bytes,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.key.as_ref() != Some(&expected_key) {
+            let current_key = self.key.clone().unwrap_or_default();
+            debug!(
+                expected_key = expected_key.as_str(),
+                current_key = current_key.as_str(),
+                field = field.as_str(),
+                "Reject Redis hash field save because selected key changed"
+            );
+            return false;
+        }
+
+        let Some((key, value)) = self.try_get_mut_key_value() else {
+            return false;
+        };
+
+        value.status = RedisValueStatus::Updating;
+        let old_value = value.hash_value().and_then(|hash| {
+            hash.values
+                .iter()
+                .find(|(item_field, _)| item_field == &field)
+                .map(|(_, item_value)| item_value.clone())
+        });
+
+        let new_string: SharedString = bytes_to_display_string(&new_bytes).into();
+        if let Some(RedisValueData::Hash(hash_data)) = value.data.as_mut() {
+            let hash = Arc::make_mut(hash_data);
+            if let Some((_, item_value)) = hash.values.iter_mut().find(|(item_field, _)| item_field == &field) {
+                *item_value = new_string.clone();
+                cx.emit(ServerEvent::ValueUpdated(key.clone()));
+            }
+        }
+        cx.notify();
+
+        let server_id = self.server_id.clone();
+        let db = self.db;
+        let key_clone = key.clone();
+        let field_clone = field.clone();
+        let new_bytes_vec = new_bytes.to_vec();
+        info!(
+            key = %key,
+            field = %field,
+            bytes_len = new_bytes_vec.len(),
+            "Saving Redis hash field bytes from dialog editor"
+        );
+
+        self.spawn(
+            ServerTask::UpdateHashValue,
+            move || async move {
+                let mut conn = get_connection_manager().get_connection(&server_id, db).await?;
+                let _: () = cmd("HSET")
+                    .arg(key.as_str())
+                    .arg(field.as_str())
+                    .arg(new_bytes_vec)
+                    .query_async(&mut conn)
+                    .await?;
+                Ok(())
+            },
+            move |this, result, cx| {
+                let key_still_selected = this.key.as_ref() == Some(&key_clone);
+                if key_still_selected {
+                    if let Some(value) = this.value.as_mut() {
+                        value.status = RedisValueStatus::Idle;
+                    }
+                } else {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    debug!(
+                        expected_key = key_clone.as_str(),
+                        current_key = current_key.as_str(),
+                        field = field_clone.as_str(),
+                        "Skip Redis hash field local update because selected key changed"
+                    );
+                }
+                if let Err(err) = result {
+                    error!(
+                        key = %key_clone,
+                        field = %field_clone,
+                        error = %err,
+                        "Failed to save Redis hash field bytes"
+                    );
+                    if key_still_selected
+                        && let Some(original) = old_value
+                        && let Some(RedisValueData::Hash(hash_data)) = this.value.as_mut().and_then(|v| v.data.as_mut())
+                    {
+                        let hash = Arc::make_mut(hash_data);
+                        if let Some((_, item_value)) = hash
+                            .values
+                            .iter_mut()
+                            .find(|(item_field, _)| item_field == &field_clone)
+                        {
+                            *item_value = original;
+                        }
+                    }
+                    cx.emit(ServerEvent::ErrorOccurred(crate::states::ErrorMessage {
+                        category: "update_hash_value".into(),
+                        message: err.to_string().into(),
+                        created_at: crate::helpers::unix_ts(),
+                    }));
+                }
+                if key_still_selected {
+                    cx.emit(ServerEvent::ValueUpdated(key_clone));
+                }
+                cx.notify();
+            },
+            cx,
+        );
+        true
+    }
+
     fn add_or_update_hash_value(&mut self, new_field: SharedString, new_value: SharedString, cx: &mut Context<Self>) {
         // Early return if no key/value is selected
         let Some((key, value)) = self.try_get_mut_key_value() else {
