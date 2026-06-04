@@ -19,7 +19,10 @@ use super::{
 use crate::{
     connection::{RedisAsyncConn, get_connection_manager},
     error::Error,
-    helpers::codec::{CompressionFormat, MAX_DECOMPRESS_BYTES, decompress, detect},
+    helpers::{
+        codec::{CompressionFormat, MAX_DECOMPRESS_BYTES, decompress, detect},
+        fast_contains_ignore_case,
+    },
     states::ServerEvent,
 };
 use bytes::Bytes;
@@ -30,6 +33,9 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+const LIST_PAGE_SIZE: usize = 100;
+const LIST_FILTER_PAGE_SIZE: usize = 1000;
 
 const REMOVE_LIST_VALUES_SCRIPT: &str = r#"
 local key = KEYS[1]
@@ -51,6 +57,21 @@ fn normalized_remove_indexes(mut indexes: Vec<usize>) -> Vec<usize> {
     indexes.sort_unstable_by(|a, b| b.cmp(a));
     indexes.dedup();
     indexes
+}
+
+fn list_keyword_match_count(values: &[SharedString], keyword: Option<&SharedString>) -> usize {
+    let Some(keyword) = keyword.filter(|keyword| !keyword.is_empty()) else {
+        return values.len();
+    };
+    let keyword = keyword.to_lowercase();
+    values
+        .iter()
+        .filter(|value| fast_contains_ignore_case(value.as_str(), &keyword))
+        .count()
+}
+
+fn should_auto_load_filtered_list(list: &RedisListValue) -> bool {
+    list.keyword.as_ref().is_some_and(|keyword| !keyword.is_empty()) && list.values.len() < list.size
 }
 
 /// Convert bytes to display string, handling compressed data.
@@ -87,7 +108,7 @@ async fn get_redis_list_value(conn: &mut RedisAsyncConn, key: &str, start: usize
 /// Fetches the total length (LLEN) and the first 100 items.
 pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) -> Result<RedisValue> {
     let size: usize = cmd("LLEN").arg(key).query_async(conn).await?;
-    let values = get_redis_list_value(conn, key, 0, 99).await?;
+    let values = get_redis_list_value(conn, key, 0, LIST_PAGE_SIZE - 1).await?;
     Ok(RedisValue {
         key_type: KeyType::List,
         data: Some(RedisValueData::List(Arc::new(RedisListValue {
@@ -102,25 +123,39 @@ pub(crate) async fn first_load_list_value(conn: &mut RedisAsyncConn, key: &str) 
 
 impl ZedisServerState {
     pub fn filter_list_value(&mut self, keyword: SharedString, cx: &mut Context<Self>) -> bool {
-        let Some((key, value)) = self.try_get_mut_key_value() else {
-            return false;
+        let (key, should_load_more) = {
+            let Some((key, value)) = self.try_get_mut_key_value() else {
+                return false;
+            };
+            let Some(list_value) = value.list_value() else {
+                return false;
+            };
+            let filter_keyword = if keyword.is_empty() {
+                None
+            } else {
+                Some(keyword.clone())
+            };
+            let should_load_more =
+                filter_keyword.is_some() && list_value.values.len() < list_value.size && !value.is_loading();
+            let new_list_value = RedisListValue {
+                keyword: filter_keyword,
+                size: list_value.size,
+                values: list_value.values.clone(),
+            };
+            value.data = Some(RedisValueData::List(Arc::new(new_list_value)));
+            (key, should_load_more)
         };
-        let Some(list_value) = value.list_value() else {
-            return false;
-        };
-        let filter_keyword = if keyword.is_empty() {
-            None
-        } else {
-            Some(keyword.clone())
-        };
-        let new_list_value = RedisListValue {
-            keyword: filter_keyword,
-            size: list_value.size,
-            values: list_value.values.clone(),
-        };
-        value.data = Some(RedisValueData::List(Arc::new(new_list_value)));
         self.remember_value_filter_keyword_for_key(key.as_str(), keyword);
-        cx.emit(ServerEvent::ValueUpdated(self.key.clone().unwrap_or_default()));
+        if should_load_more {
+            cx.emit(ServerEvent::ValueUpdated(key.clone()));
+            info!(
+                key = %key,
+                "Start loading remaining Redis list values for keyword search"
+            );
+            self.load_more_list_value(cx);
+        } else {
+            cx.emit(ServerEvent::ValueUpdated(key));
+        }
         true
     }
     pub fn remove_list_value(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -405,21 +440,36 @@ impl ZedisServerState {
 
         // Check if we have valid list data BEFORE setting Loading status
         // to avoid leaving status in Loading if we return early
-        let current_len = match value.list_value() {
-            Some(list) => list.values.len(),
+        let (current_len, size, keyword) = match value.list_value() {
+            Some(list) => (list.values.len(), list.size, list.keyword.clone()),
             None => return,
         };
+        if current_len >= size {
+            debug!(
+                key = %key,
+                current_len,
+                size, "Skip Redis list pagination because all values are loaded"
+            );
+            return;
+        }
 
         value.status = RedisValueStatus::Loading;
         cx.notify();
 
         let server_id = self.server_id.clone();
         let db = self.db;
-        // Calculate pagination
+        // Calculate pagination. Keyword searches need bigger pages because Redis LIST
+        // has no server-side value scan, so Zedis must inspect list ranges client-side.
         let start = current_len;
-        let stop = start + 99; // Load 100 items
+        let page_size = if keyword.is_some() {
+            LIST_FILTER_PAGE_SIZE
+        } else {
+            LIST_PAGE_SIZE
+        };
+        let stop = start + page_size - 1;
         cx.emit(ServerEvent::ValuePaginationStarted(key.clone()));
         let key_clone = key.clone();
+        let request_keyword = keyword.clone();
         self.spawn(
             ServerTask::LoadMoreValue,
             move || async move {
@@ -429,6 +479,17 @@ impl ZedisServerState {
                 Ok(new_values)
             },
             move |this, result, cx| {
+                if this.key.as_ref() != Some(&key_clone) {
+                    let current_key = this.key.clone().unwrap_or_default();
+                    debug!(
+                        expected_key = key_clone.as_str(),
+                        current_key = current_key.as_str(),
+                        "Skip stale list value pagination result"
+                    );
+                    return;
+                }
+
+                let mut should_load_more = false;
                 if let Ok(new_values) = result
                     && !new_values.is_empty()
                 {
@@ -436,7 +497,29 @@ impl ZedisServerState {
                     // Append new items to the existing list
                     if let Some(RedisValueData::List(list_data)) = this.value.as_mut().and_then(|v| v.data.as_mut()) {
                         let list = Arc::make_mut(list_data);
-                        list.values.extend(new_values.into_iter().map(|v| v.into()));
+                        if list.values.len() != start {
+                            debug!(
+                                key = key_clone.as_str(),
+                                request_start = start,
+                                current_len = list.values.len(),
+                                "Skip stale list value pagination result because loaded length changed"
+                            );
+                        } else {
+                            list.values.extend(new_values.into_iter().map(|v| v.into()));
+                            should_load_more = should_auto_load_filtered_list(list);
+                            debug!(
+                                key = key_clone.as_str(),
+                                loaded = list.values.len(),
+                                total = list.size,
+                                request_keyword_len = request_keyword
+                                    .as_ref()
+                                    .map(|keyword| keyword.as_str().len())
+                                    .unwrap_or(0),
+                                match_count = list_keyword_match_count(&list.values, list.keyword.as_ref()),
+                                should_load_more,
+                                "Loaded Redis list value page"
+                            );
+                        }
                     }
                 }
                 cx.emit(ServerEvent::ValuePaginationFinished(key_clone));
@@ -444,6 +527,9 @@ impl ZedisServerState {
                     value.status = RedisValueStatus::Idle;
                 }
                 cx.notify();
+                if should_load_more {
+                    this.load_more_list_value(cx);
+                }
             },
             cx,
         );
@@ -554,10 +640,45 @@ impl ZedisServerState {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_remove_indexes;
+    use super::{RedisListValue, list_keyword_match_count, normalized_remove_indexes, should_auto_load_filtered_list};
+    use gpui::SharedString;
 
     #[test]
     fn normalizes_batch_remove_indexes_descending_and_unique() {
         assert_eq!(normalized_remove_indexes(vec![3, 1, 3, 2]), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn counts_list_keyword_matches_case_insensitively() {
+        let values = vec![
+            SharedString::from("alpha"),
+            SharedString::from("Beta"),
+            SharedString::from("alphabet"),
+        ];
+        let keyword = SharedString::from("ALP");
+
+        assert_eq!(list_keyword_match_count(&values, Some(&keyword)), 2);
+    }
+
+    #[test]
+    fn auto_loads_filtered_list_until_all_values_are_scanned() {
+        let list = RedisListValue {
+            keyword: Some(SharedString::from("needle")),
+            size: 3,
+            values: vec![SharedString::from("first")],
+        };
+
+        assert!(should_auto_load_filtered_list(&list));
+    }
+
+    #[test]
+    fn does_not_auto_load_unfiltered_list_search() {
+        let list = RedisListValue {
+            keyword: None,
+            size: 3,
+            values: vec![SharedString::from("first")],
+        };
+
+        assert!(!should_auto_load_filtered_list(&list));
     }
 }
