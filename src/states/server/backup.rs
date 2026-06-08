@@ -19,25 +19,41 @@ use crate::{
 use futures::{StreamExt, channel::mpsc::UnboundedReceiver};
 use gpui::prelude::*;
 use humansize::{DECIMAL, format_size};
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 use tracing::{info, warn};
 
-fn reveal_backup_file(file_path: &str) {
+fn key_backup_directory(path: &Path) -> Option<&Path> {
+    path.parent().filter(|dir| !dir.as_os_str().is_empty())
+}
+
+fn reveal_backup_directory(file_path: &str) {
     let path = Path::new(file_path);
+    let dir = key_backup_directory(path)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let result = if cfg!(target_os = "macos") {
-        Command::new("open").arg("-R").arg(path).spawn()
+        Command::new("open").arg(&dir).spawn()
     } else if cfg!(target_os = "windows") {
-        Command::new("explorer.exe")
-            .arg(format!("/select,{}", path.display()))
-            .spawn()
+        Command::new("explorer.exe").arg(&dir).spawn()
     } else {
-        let dir = path.parent().unwrap_or(path);
-        Command::new("xdg-open").arg(dir).spawn()
+        Command::new("xdg-open").arg(&dir).spawn()
     };
 
     match result {
-        Ok(_) => info!(path = %path.display(), "revealed key backup file"),
-        Err(err) => warn!(path = %path.display(), error = %err, "failed to reveal key backup file"),
+        Ok(_) => info!(
+            path = %path.display(),
+            dir = %dir.display(),
+            "opened key backup directory"
+        ),
+        Err(err) => warn!(
+            path = %path.display(),
+            dir = %dir.display(),
+            error = %err,
+            "failed to open key backup directory"
+        ),
     }
 }
 
@@ -81,7 +97,7 @@ impl ZedisServerState {
                     cx.emit(ServerEvent::Notification(NotificationAction::new_success(
                         message.into(),
                     )));
-                    reveal_backup_file(&summary.file_path);
+                    reveal_backup_directory(&summary.file_path);
                 }
                 cx.notify();
             },
@@ -144,5 +160,23 @@ impl ZedisServerState {
             },
             cx,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_backup_directory_uses_parent_directory() {
+        let dir = PathBuf::from("Downloads").join("Zedis Backups");
+        let path = dir.join("redis.zedis-backup.jsonl");
+
+        assert_eq!(key_backup_directory(&path), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn key_backup_directory_ignores_empty_relative_parent() {
+        assert_eq!(key_backup_directory(Path::new("redis.zedis-backup.jsonl")), None);
     }
 }
