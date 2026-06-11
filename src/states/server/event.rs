@@ -164,12 +164,15 @@ impl ServerTask {
 }
 
 /// Events emitted by server state for reactive UI updates
+///
+/// Variant payloads are part of the event contract: subscribers destructure
+/// them on demand and they show up in `Debug` logs, so unread fields are
+/// expected here and not dead code.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum ServerEvent {
     /// A new background task has started.
     TaskStarted(ServerTask),
-    /// A background task has completed.
-    TaskFinished(SharedString),
 
     /// Terminal toggled
     TerminalToggled(bool),

@@ -16,8 +16,8 @@ use crate::{
     constants::GITHUB_REPOSITORY_URL,
     helpers::MemuAction,
     states::{
-        FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore,
-        i18n_sidebar, i18n_update,
+        FontSize, FontSizeAction, LocaleAction, SettingsAction, ThemeAction, ZedisGlobalStore, i18n_sidebar,
+        i18n_update,
     },
     views::open_about_window,
 };

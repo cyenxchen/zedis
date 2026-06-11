@@ -128,6 +128,10 @@ impl PresetCredential {
     }
 
     /// Convert to display string (masked password)
+    ///
+    /// Not called yet: reserved for the credential save prompt UI
+    /// (see `ServerEvent::CredentialSavePrompt` TODO).
+    #[allow(dead_code)]
     pub fn to_display_string(&self) -> String {
         match &self.username {
             Some(u) => format!("{}:****", u),

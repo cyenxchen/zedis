@@ -206,6 +206,10 @@ impl RedisInfo {
     }
 
     /// Calculate the hit rate
+    ///
+    /// Not displayed yet: derived stat consuming the aggregated
+    /// `keyspace_hits`/`keyspace_misses`, kept for the server info panel.
+    #[allow(dead_code)]
     pub fn hit_rate(&self) -> f64 {
         let total = self.keyspace_hits + self.keyspace_misses;
         if total == 0 {
@@ -216,6 +220,10 @@ impl RedisInfo {
     }
 
     /// Get the total number of keys
+    ///
+    /// Not displayed yet: derived stat consuming the merged `keyspace` map,
+    /// kept for the server info panel.
+    #[allow(dead_code)]
     pub fn total_keys(&self) -> u64 {
         self.keyspace.values().map(|k| k.keys).sum()
     }

@@ -48,16 +48,21 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Constants for state management
 const MAX_ERROR_MESSAGES: usize = 10; // Maximum error messages to keep in memory
-/// Error message with categorization and timestamp
+/// Error message with categorization and timestamp.
+///
+/// `category` and `created_at` aren't read directly yet — they're retained for
+/// the `error_messages` history and `Debug` tracing.
 #[derive(Debug, Clone)]
 pub struct ErrorMessage {
     /// Category of error (e.g., task name like "ping", "scan_keys")
+    #[allow(dead_code)]
     pub category: SharedString,
 
     /// Human-readable error message
     pub message: SharedString,
 
     /// Unix timestamp when error occurred
+    #[allow(dead_code)]
     pub created_at: i64,
 }
 
@@ -433,11 +438,6 @@ impl ZedisServerState {
         !matches!(self.server_status, RedisServerStatus::Idle)
     }
 
-    /// Get the type of a specific key (if known)
-    pub fn key_type(&self, key: &str) -> Option<&KeyType> {
-        self.keys.get(key)
-    }
-
     /// Get the current key tree ID (changes when keys are reloaded)
     pub fn key_tree_id(&self) -> &str {
         &self.key_tree_id
@@ -606,16 +606,6 @@ impl ZedisServerState {
     /// Get the value data for the currently selected key
     pub fn value(&self) -> Option<&RedisValue> {
         self.value.as_ref()
-    }
-
-    /// Get the key type of the currently selected value
-    pub fn value_key_type(&self) -> Option<KeyType> {
-        self.value.as_ref().map(|value| value.key_type())
-    }
-
-    /// Get the preset credentials for subsequent operations
-    pub fn preset_credentials(&self) -> Vec<super::PresetCredential> {
-        self.preset_credentials.clone()
     }
 
     /// Get the set of currently opened server IDs
@@ -891,6 +881,10 @@ impl ZedisServerState {
     // ===== Protobuf schema operations =====
 
     /// Get the protobuf schema
+    ///
+    /// Not called yet: schema-based decoding is not wired into the value
+    /// pipeline (only the type selector in the status bar is hooked up).
+    #[allow(dead_code)]
     pub fn protobuf_schema(&self) -> &ProtobufSchema {
         &self.protobuf_schema
     }
@@ -917,11 +911,18 @@ impl ZedisServerState {
     }
 
     /// Decode bytes using current protobuf schema
+    ///
+    /// Not called yet: schema-based decoding is not wired into the value
+    /// pipeline (`DataFormat::Protobuf` display path).
+    #[allow(dead_code)]
     pub fn decode_protobuf(&self, bytes: &[u8]) -> Option<String> {
         self.protobuf_schema.decode(bytes).ok()
     }
 
     /// Clear protobuf schema
+    ///
+    /// Not called yet: the UI has no "clear schema" entry point.
+    #[allow(dead_code)]
     pub fn clear_protobuf_schema(&mut self, cx: &mut Context<Self>) {
         self.protobuf_schema.clear();
         cx.emit(ServerEvent::ProtobufSchemaLoaded(vec![]));
