@@ -82,6 +82,7 @@ pub struct Dialog {
     title: Option<AnyElement>,
     footer: Option<FooterFn>,
     content: Div,
+    floating_children: Vec<AnyElement>,
     width: Pixels,
     max_width: Option<Pixels>,
     margin_top: Option<Pixels>,
@@ -118,6 +119,7 @@ impl Dialog {
             title: None,
             footer: None,
             content: v_flex(),
+            floating_children: Vec::new(),
             margin_top: None,
             width: px(480.),
             max_width: None,
@@ -159,6 +161,15 @@ impl Dialog {
                 .map(|e| e.into_any_element())
                 .collect()
         }));
+        self
+    }
+
+    /// Add an absolutely-positioned child to the outer dialog container.
+    ///
+    /// This is useful for decorations or drag handles that need to sit on the
+    /// dialog border instead of inside the scrollable content area.
+    pub fn floating_child(mut self, child: impl IntoElement) -> Self {
+        self.floating_children.push(child.into_any_element());
         self
     }
 
@@ -525,6 +536,7 @@ impl RenderOnce for Dialog {
                                         .children(footer(render_ok, render_cancel, window, cx)),
                                 )
                             })
+                            .children(self.floating_children)
                             .with_animation("slide-down", animation.clone(), move |this, delta| {
                                 let y_offset = px(0.) + delta * px(30.);
                                 // This is equivalent to `shadow_xl` with an extra opacity.

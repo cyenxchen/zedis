@@ -28,20 +28,167 @@ use crate::helpers::is_windows;
 use crate::states::edit_session::EditSession;
 use crate::states::{ZedisServerState, i18n_common};
 use bytes::Bytes;
-use gpui::{App, Entity, SharedString, Window, prelude::*, px};
+use gpui::{
+    AnyElement, App, Context, DragMoveEvent, Empty, Entity, InteractiveElement, IntoElement, MouseButton, Pixels,
+    Point, Render, SharedString, StatefulInteractiveElement, Window, div, prelude::*, px,
+};
 use gpui_component::highlighter::Language;
 use gpui_component::input::{Input, InputEvent, InputState, TabSize};
 use gpui_component::label::Label;
 use gpui_component::{
     ActiveTheme, Sizable, WindowExt,
     button::{Button, ButtonVariants},
-    h_flex, v_flex,
+    h_flex, v_flex, window_paddings,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tracing::{debug, trace};
 
 // Constants
 const DEFAULT_TAB_SIZE: usize = 2;
+const DEFAULT_DIALOG_WIDTH: f32 = 860.0;
+const DEFAULT_EDITOR_HEIGHT: f32 = 400.0;
+const MIN_DIALOG_WIDTH: f32 = 700.0;
+const MIN_EDITOR_HEIGHT: f32 = 240.0;
+const VIEWPORT_MARGIN: f32 = 96.0;
+const DIALOG_TOP_MARGIN: f32 = 48.0;
+const DIALOG_BOTTOM_MARGIN: f32 = 48.0;
+const EDITOR_VERTICAL_CHROME: f32 = 260.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DialogDimensions {
+    width: f32,
+    editor_height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResizeStart {
+    mouse: Point<Pixels>,
+    dimensions: DialogDimensions,
+}
+
+#[derive(Clone)]
+struct DragEditorResize;
+
+impl Render for DragEditorResize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+fn clamp_dialog_dimensions(dimensions: DialogDimensions, window: &Window) -> DialogDimensions {
+    let viewport_size = window.viewport_size();
+    let max_width = (f32::from(viewport_size.width) - VIEWPORT_MARGIN).max(MIN_DIALOG_WIDTH);
+    let max_editor_height = (max_dialog_height(window) - EDITOR_VERTICAL_CHROME).max(MIN_EDITOR_HEIGHT);
+
+    DialogDimensions {
+        width: dimensions.width.clamp(MIN_DIALOG_WIDTH, max_width),
+        editor_height: dimensions.editor_height.clamp(MIN_EDITOR_HEIGHT, max_editor_height),
+    }
+}
+
+fn max_dialog_height(window: &Window) -> f32 {
+    let paddings = window_paddings(window);
+    let viewport_height = f32::from(window.viewport_size().height);
+    let padding_height = f32::from(paddings.top) + f32::from(paddings.bottom);
+
+    (viewport_height - padding_height - DIALOG_TOP_MARGIN - DIALOG_BOTTOM_MARGIN).max(0.0)
+}
+
+fn render_dialog_resize_handle(
+    dialog_dimensions: Rc<Cell<DialogDimensions>>,
+    resize_start: Rc<Cell<Option<ResizeStart>>>,
+    cx: &mut App,
+) -> AnyElement {
+    let dialog_dimensions_for_mouse_down = dialog_dimensions.clone();
+    let resize_start_for_mouse_down = resize_start.clone();
+    let dialog_dimensions_for_drag = dialog_dimensions.clone();
+    let resize_start_for_drag = resize_start.clone();
+    let resize_start_for_mouse_up = resize_start.clone();
+
+    div()
+        .id("edit-value-dialog-resize-handle")
+        .absolute()
+        .right(px(-6.0))
+        .bottom(px(-6.0))
+        .size(px(24.0))
+        .rounded(px(4.0))
+        .cursor_nwse_resize()
+        .hover(|this| this.bg(cx.theme().accent.opacity(0.4)))
+        .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+            cx.stop_propagation();
+            let start = ResizeStart {
+                mouse: event.position,
+                dimensions: dialog_dimensions_for_mouse_down.get(),
+            };
+            resize_start_for_mouse_down.set(Some(start));
+            debug!(
+                mouse_x = f32::from(event.position.x),
+                mouse_y = f32::from(event.position.y),
+                width = start.dimensions.width,
+                editor_height = start.dimensions.editor_height,
+                "start resizing edit value dialog"
+            );
+        })
+        .on_mouse_up(MouseButton::Left, move |_, _window, cx| {
+            cx.stop_propagation();
+            resize_start_for_mouse_up.set(None);
+        })
+        .on_drag(DragEditorResize, |drag, _, _, cx| {
+            cx.stop_propagation();
+            cx.new(|_| drag.clone())
+        })
+        .on_drag_move(move |event: &DragMoveEvent<DragEditorResize>, window, cx| {
+            cx.stop_propagation();
+
+            let Some(start) = resize_start_for_drag.get() else {
+                return;
+            };
+
+            let delta_x = f32::from(event.event.position.x - start.mouse.x);
+            let delta_y = f32::from(event.event.position.y - start.mouse.y);
+            let next = clamp_dialog_dimensions(
+                DialogDimensions {
+                    width: start.dimensions.width + delta_x,
+                    editor_height: start.dimensions.editor_height + delta_y,
+                },
+                window,
+            );
+
+            if next != dialog_dimensions_for_drag.get() {
+                dialog_dimensions_for_drag.set(next);
+                trace!(
+                    width = next.width,
+                    editor_height = next.editor_height,
+                    delta_x,
+                    delta_y,
+                    "resized edit value dialog"
+                );
+                window.refresh();
+            }
+        })
+        .child(
+            div()
+                .absolute()
+                .right(px(8.0))
+                .bottom(px(8.0))
+                .w(px(10.0))
+                .h(px(2.0))
+                .rounded(px(1.0))
+                .bg(cx.theme().muted_foreground.opacity(0.7)),
+        )
+        .child(
+            div()
+                .absolute()
+                .right(px(8.0))
+                .bottom(px(8.0))
+                .w(px(2.0))
+                .h(px(10.0))
+                .rounded(px(1.0))
+                .bg(cx.theme().muted_foreground.opacity(0.7)),
+        )
+        .into_any_element()
+}
 
 fn supports_json_folding(format: EditFormat) -> bool {
     matches!(
@@ -104,6 +251,18 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     let current_format = Rc::new(Cell::new(initial_format));
     let current_compression = Rc::new(Cell::new(initial_compression));
     let error_message: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let dialog_dimensions = Rc::new(Cell::new(DialogDimensions {
+        width: DEFAULT_DIALOG_WIDTH,
+        editor_height: DEFAULT_EDITOR_HEIGHT,
+    }));
+    let resize_start: Rc<Cell<Option<ResizeStart>>> = Rc::new(Cell::new(None));
+
+    debug!(
+        key = %key,
+        width = DEFAULT_DIALOG_WIDTH,
+        editor_height = DEFAULT_EDITOR_HEIGHT,
+        "opening edit value dialog with resizable editor"
+    );
 
     // Create input state for editor
     // TODO: Syntax highlighting doesn't update when format changes because
@@ -170,8 +329,12 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         })
     };
 
-    window.open_dialog(cx, move |dialog, _window, cx| {
+    window.open_dialog(cx, move |dialog, window, cx| {
         // editor_input and subscription are now captured, not recreated each frame
+        let dimensions = clamp_dialog_dimensions(dialog_dimensions.get(), window);
+        if dimensions != dialog_dimensions.get() {
+            dialog_dimensions.set(dimensions);
+        }
 
         // Clones for save handler
         let session_for_save = session.clone();
@@ -269,8 +432,15 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             .title(selectable_title.clone())
             .overlay(true)
             .overlay_closable(false)
-            .min_w(px(700.0))
-            .max_w(px(1200.0))
+            .min_w(px(MIN_DIALOG_WIDTH))
+            .w(px(dimensions.width))
+            .max_h(px(max_dialog_height(window)))
+            .margin_top(px(DIALOG_TOP_MARGIN))
+            .floating_child(render_dialog_resize_handle(
+                dialog_dimensions.clone(),
+                resize_start.clone(),
+                cx,
+            ))
             .child(
                 v_flex()
                     .gap_2()
@@ -297,11 +467,13 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                     )
                     .child(
                         // Editor
-                        Input::new(&editor_input)
-                            .h(px(400.0))
-                            .w_full()
-                            .font_family(get_font_family())
-                            .bordered(true),
+                        div().relative().w_full().h(px(dimensions.editor_height)).child(
+                            Input::new(&editor_input)
+                                .h_full()
+                                .w_full()
+                                .font_family(get_font_family())
+                                .bordered(true),
+                        ),
                     )
                     .when_some(error_message.borrow().clone(), |this, msg| {
                         this.child(Label::new(msg).text_color(cx.theme().danger).text_sm())
