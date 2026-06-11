@@ -319,9 +319,7 @@ pub fn check_for_updates(manual: bool, cx: &App) {
 
         // Fake update mode: skip network, use fake release
         if is_fake_update() {
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(1))
-                .await;
+            cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
             let release = fake_release();
             info!("[FAKE] Simulating update available: {}", release.version);
             let _ = state_entity.update(cx, |state, cx| {
@@ -466,9 +464,7 @@ pub fn download_update(cx: &App) {
                 state.status = UpdateStatus::Installing;
                 cx.notify();
             });
-            cx.background_executor()
-                .timer(std::time::Duration::from_secs(2))
-                .await;
+            cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
 
             // Done
             info!("[FAKE] Simulating install complete");

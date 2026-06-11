@@ -43,6 +43,10 @@ pub struct ProtobufSchema {
 
 impl ProtobufSchema {
     /// Create a new empty schema state
+    ///
+    /// Test-only constructor; production builds the schema via `default()`
+    /// in the `ZedisServerState` field initializer.
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -53,6 +57,10 @@ impl ProtobufSchema {
     }
 
     /// Get currently selected message type
+    ///
+    /// Not consumed yet: the state tracks the selection, but no production
+    /// caller reads it back (awaits the value-pipeline decode wiring).
+    #[allow(dead_code)]
     pub fn selected_type(&self) -> Option<&SharedString> {
         self.selected_type.as_ref()
     }
@@ -65,16 +73,25 @@ impl ProtobufSchema {
     }
 
     /// Check if a schema is loaded
+    ///
+    /// Not consumed yet: awaits the value-pipeline `DataFormat::Protobuf` gate.
+    #[allow(dead_code)]
     pub fn has_schema(&self) -> bool {
         self.pool.is_some()
     }
 
     /// Get the descriptor pool
+    ///
+    /// Not consumed yet: exposed for future direct descriptor access.
+    #[allow(dead_code)]
     pub fn pool(&self) -> Option<&Arc<DescriptorPool>> {
         self.pool.as_ref()
     }
 
     /// Get message descriptor for the selected type
+    ///
+    /// Not consumed yet: awaits the value-pipeline decode wiring.
+    #[allow(dead_code)]
     pub fn selected_descriptor(&self) -> Option<MessageDescriptor> {
         let pool = self.pool.as_ref()?;
         let type_name = self.selected_type.as_ref()?;
@@ -190,6 +207,13 @@ impl ProtobufSchema {
     }
 
     /// Decode protobuf bytes using the selected message type
+    ///
+    /// Not wired into the value pipeline yet; kept alongside `encode` for the
+    /// pending schema-based (de)serialization path. (It currently escapes the
+    /// dead-code lint only via the dead-but-retained
+    /// `ZedisServerState::decode_protobuf`; the explicit allow keeps it
+    /// suppressed independent of that prop.)
+    #[allow(dead_code)]
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
         let pool = self.pool.as_ref().ok_or_else(|| Error::Invalid {
             message: "No schema loaded".to_string(),
@@ -218,6 +242,10 @@ impl ProtobufSchema {
     }
 
     /// Encode JSON string to protobuf bytes using the selected message type
+    ///
+    /// Not wired into the value pipeline yet; kept alongside `decode` for the
+    /// pending schema-based (de)serialization path.
+    #[allow(dead_code)]
     pub fn encode(&self, json_str: &str) -> Result<Vec<u8>> {
         let pool = self.pool.as_ref().ok_or_else(|| Error::Invalid {
             message: "No schema loaded".to_string(),

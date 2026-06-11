@@ -23,8 +23,8 @@ use gpui::{AnyElement, App, Entity, SharedString, Subscription, Window, div, pre
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, WindowExt,
     button::{Button, ButtonVariants},
-    dialog::DialogButtonProps,
     checkbox::Checkbox,
+    dialog::DialogButtonProps,
     form::{field, v_form},
     input::{Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction},
     label::Label,
@@ -728,8 +728,7 @@ impl ZedisServers {
 
                     let viewport_height = window.viewport_size().height;
                     // Dialog top margin is viewport_height/10, plus ~180px for title/padding/footer/animation
-                    let max_form_height =
-                        (viewport_height - viewport_height / 10. - px(180.0)).max(px(200.0));
+                    let max_form_height = (viewport_height - viewport_height / 10. - px(180.0)).max(px(200.0));
                     div()
                         .id("servers-scrollable-container")
                         .max_h(max_form_height)

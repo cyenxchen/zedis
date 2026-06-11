@@ -71,6 +71,11 @@ impl NotificationAction {
     }
 
     /// Creates a new error notification
+    ///
+    /// Not called yet: task errors go through `ServerEvent::ErrorOccurred`,
+    /// but the constructor completes the severity family alongside
+    /// `new_info`/`new_success`/`new_warning`.
+    #[allow(dead_code)]
     pub fn new_error(message: SharedString) -> Self {
         Self {
             category: NotificationCategory::Error,
@@ -103,6 +108,10 @@ pub enum DataFormat {
     Snappy,
     MessagePack,
     ProtobufRaw,
+    /// Schema-based protobuf decoding. Never constructed yet: it is already
+    /// matched in display code, but producing it requires wiring
+    /// `decode_protobuf` into the value pipeline.
+    #[allow(dead_code)]
     Protobuf,
 }
 
@@ -249,6 +258,9 @@ pub struct RedisSetValue {
 pub enum SortOrder {
     #[default]
     Asc, // Ascending order (default)
+    /// Never constructed yet: the reverse-order query logic exists in
+    /// `zset.rs`, but the UI has no sort toggle.
+    #[allow(dead_code)]
     Desc, // Descending order
 }
 
@@ -431,16 +443,6 @@ impl RedisValue {
     /// Checks if the value is currently loading
     pub fn is_loading(&self) -> bool {
         matches!(self.status, RedisValueStatus::Loading)
-    }
-
-    /// Returns the string value if the data is a String type
-    pub fn bytes_string_value(&self) -> Option<SharedString> {
-        if let Some(value) = self.bytes_value()
-            && value.is_utf8_text()
-        {
-            return value.text.clone();
-        }
-        None
     }
 
     /// Returns the bytes value if the data is a Bytes type
