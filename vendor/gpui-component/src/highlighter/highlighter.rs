@@ -838,4 +838,47 @@ mod tests {
             ],
         );
     }
+
+    #[test]
+    fn perf_smoke_highlight_visible_lines() {
+        use crate::input::RopeExt;
+        use ropey::Rope;
+
+        // Multi-MB JSON like the reported scenario; one editor frame asks
+        // styles() for each visible row.
+        let mut json = String::from("{\n  \"mapping\": [\n");
+        for i in 0..9000 {
+            json.push_str(&format!(
+                "    {{\n      \"commPoint\": [\n        \"LD_Device11$GGIO{i:03}$ST$Beh$stVal.INS\"\n      ],\n      \"des\": [\n        \"TransSubstation/PROP/OTHER/C1-LD_Device11\"\n      ]\n    }}"
+            ));
+            json.push_str(if i + 1 < 9000 { ",\n" } else { "\n" });
+        }
+        json.push_str("  ]\n}\n");
+        let text = Rope::from(json.as_str());
+        let total_rows = text.lines_len();
+
+        let mut hl = SyntaxHighlighter::new("json");
+        let t = std::time::Instant::now();
+        hl.update(None, &text);
+        let parse_ms = t.elapsed().as_millis();
+
+        let theme = HighlightTheme::default_dark();
+
+        // One frame: 50 visible rows in the middle of the document.
+        let start_row = total_rows / 2;
+        let t = std::time::Instant::now();
+        let mut total_styles = 0;
+        for row in start_row..(start_row + 50).min(total_rows) {
+            let line_start = text.line_start_offset(row);
+            let line = text.slice_line(row);
+            let range = line_start..(line_start + line.len() + 1).min(text.len());
+            total_styles += hl.styles(&range, &theme).len();
+        }
+        let frame_ms = t.elapsed().as_millis();
+
+        println!(
+            "rows={} parse={}ms frame(50-lines-styles)={}ms styles={}",
+            total_rows, parse_ms, frame_ms, total_styles
+        );
+    }
 }

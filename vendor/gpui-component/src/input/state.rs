@@ -797,6 +797,13 @@ impl InputState {
     }
 
     pub(super) fn ensure_json_fold_ranges(&mut self) {
+        // Edits clear all folds and mark ranges dirty. Recomputing here would
+        // re-scan the whole text after every keystroke even though rendering
+        // only needs ranges while folds are active. `toggle_at_offset` ensures
+        // ranges itself when the user actually folds something.
+        if !self.json_folding.has_folds() {
+            return;
+        }
         self.json_folding.ensure_ranges(&self.text);
     }
 
@@ -822,7 +829,7 @@ impl InputState {
     }
 
     pub(super) fn reveal_json_folded_range(&mut self, range: &Range<usize>, cx: &mut Context<Self>) {
-        if range.is_empty() {
+        if range.is_empty() || !self.json_folding.has_folds() {
             return;
         }
 
@@ -846,8 +853,11 @@ impl InputState {
     }
 
     pub(super) fn visible_wrapped_line_count(&self) -> usize {
+        // `TextWrapper::len()` is the precomputed total of wrapped lines, so
+        // folding only needs to subtract the hidden rows instead of summing
+        // every row in the text.
         self.json_folding
-            .visible_wrapped_line_count(self.text_wrapper.lines.len(), |row| {
+            .visible_wrapped_line_count(self.text_wrapper.len(), |row| {
                 self.text_wrapper
                     .lines
                     .get(row)
@@ -1247,6 +1257,18 @@ impl InputState {
     }
 
     pub(super) fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Plain mouse moves only matter for hover/definition/diagnostic
+        // features. Skip the per-event hit-testing entirely when none of
+        // them can react, so hovering over large documents stays free.
+        if self.lsp.hover_provider.is_none()
+            && self.lsp.definition_provider.is_none()
+            && self.hover_definition.is_empty()
+            && self.diagnostic_popover.is_none()
+            && self.mode.diagnostics().is_none_or(|set| set.is_empty())
+        {
+            return;
+        }
+
         // Show diagnostic popover on mouse move
         let offset = self.index_for_mouse_position(event.position);
         self.handle_mouse_move(offset, event, window, cx);

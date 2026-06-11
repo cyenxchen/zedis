@@ -111,8 +111,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     // Would need gpui_component library changes to support dynamic language switching.
     let default_language = Language::from_str(initial_format.language());
 
-    let editor_text = Rc::new(Cell::new(initial_text.clone()));
-
     // Create editor input state BEFORE open_dialog (only once)
     // This prevents the input from being recreated on every render frame,
     // which was causing set_value/focus to be called repeatedly and
@@ -144,25 +142,33 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
     // Subscribe to editor changes BEFORE open_dialog (only once)
     // This prevents multiple subscriptions from being created on each render frame,
     // which was causing race conditions and session state loss during save.
+    //
+    // NOTE: Do NOT read the editor value here. `InputState::value()` converts
+    // the whole Rope to a String, so doing it per keystroke costs a full-text
+    // copy each key press on multi-MB values. The text is pulled from the
+    // editor once when saving or switching formats (see `sync_session_text`).
     {
-        let session_for_input = session.clone();
         let error_message_for_input = error_message.clone();
-        let editor_text_for_input = editor_text.clone();
 
-        cx.subscribe(&editor_input, move |_state, event, cx| {
+        cx.subscribe(&editor_input, move |_state, event, _cx| {
             if let InputEvent::Change = event {
-                let text = _state.read(cx).value();
-                editor_text_for_input.set(text.clone());
-
-                let mut s = session_for_input.take();
-                s.set_editor_text(text);
-                session_for_input.set(s);
-
                 *error_message_for_input.borrow_mut() = None;
             }
         })
         .detach();
     }
+
+    // Pull the current editor text into the session (one full-text copy).
+    let sync_session_text = {
+        let session = session.clone();
+        let editor_input = editor_input.clone();
+        Rc::new(move |cx: &App| {
+            let text = editor_input.read(cx).value();
+            let mut s = session.take();
+            s.set_editor_text(text);
+            session.set(s);
+        })
+    };
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         // editor_input and subscription are now captured, not recreated each frame
@@ -173,6 +179,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         let server_state_for_save = server_state.clone();
         let error_message_for_save = error_message.clone();
         let on_save_for_ok = on_save.clone();
+        let sync_session_text_for_ok = sync_session_text.clone();
 
         // Clones for footer
         let error_message_for_footer_save = error_message.clone();
@@ -180,6 +187,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
         let key_for_footer = key.clone();
         let server_state_for_footer = server_state.clone();
         let on_save_for_footer = on_save.clone();
+        let sync_session_text_for_footer = sync_session_text.clone();
 
         // Build format buttons
         let mut format_buttons: Vec<gpui::AnyElement> = Vec::new();
@@ -188,8 +196,8 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             let session_clone = session.clone();
             let error_message_clone = error_message.clone();
             let editor_input_clone = editor_input.clone();
-            let editor_text_clone = editor_text.clone();
             let current_format_clone = current_format.clone();
+            let sync_session_text_clone = sync_session_text.clone();
 
             let btn = if is_selected {
                 Button::new(("format", idx)).primary().xsmall().label(fmt.as_str())
@@ -199,6 +207,9 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                     .xsmall()
                     .label(fmt.as_str())
                     .on_click(move |_, window: &mut Window, cx: &mut App| {
+                        // Pull latest editor text into the session before converting
+                        sync_session_text_clone(cx);
+
                         // Save old format for rollback on failure
                         let old_format = current_format_clone.get();
                         current_format_clone.set(fmt);
@@ -217,7 +228,6 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
 
                             // Update editor text
                             let new_text = s.editor_text.clone();
-                            editor_text_clone.set(new_text.clone());
                             editor_input_clone.update(cx, |state, cx| {
                                 state.set_json_folding(supports_json_folding(fmt), window, cx);
                                 state.set_value(new_text, window, cx);
@@ -299,6 +309,9 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
             )
             .on_ok({
                 move |_, window, cx| {
+                    // Pull latest editor text into the session before saving
+                    sync_session_text_for_ok(cx);
+
                     let mut s = session_for_save.take();
                     match s.build_save_bytes() {
                         Ok(bytes) => {
@@ -346,6 +359,7 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                     let server_state_for_btn = server_state_for_footer.clone();
                     let on_save_for_btn = on_save_for_footer.clone();
                     let error_message_for_btn = error_message_for_footer_save.clone();
+                    let sync_session_text_for_btn = sync_session_text_for_footer.clone();
 
                     let mut buttons = vec![
                         Button::new("cancel")
@@ -355,6 +369,9 @@ pub fn open_edit_value_dialog(params: EditValueDialogParams, window: &mut Window
                             }),
                         Button::new("save").primary().label(confirm_label).on_click(
                             move |_, window: &mut Window, cx: &mut App| {
+                                // Pull latest editor text into the session before saving
+                                sync_session_text_for_btn(cx);
+
                                 let mut s = session_for_btn.take();
                                 match s.build_save_bytes() {
                                     Ok(bytes) => {

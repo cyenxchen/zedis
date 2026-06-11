@@ -509,35 +509,62 @@ impl TextElement {
             state.scroll_handle.offset().y
         };
 
-        let mut rows = Vec::new();
+        // Single pass over the rows: track the accumulated top, collect only
+        // the rows inside the viewport (plus `extra_rows`), and stop early
+        // once the viewport is filled. This avoids allocating a Vec with an
+        // entry for every row in the text on each frame.
+        let mut visible_rows = Vec::new();
+        let mut visible_top = px(0.);
         let mut line_top = px(0.);
+        let mut last_row = None;
+        let mut remaining_extra: Option<usize> = None;
+
         for (ix, line) in state.text_wrapper.lines.iter().enumerate() {
             if state.is_line_hidden_by_fold(ix) {
                 continue;
             }
 
-            let wrapped_height = line.height(line_height);
-            let line_bottom = line_top + wrapped_height;
-            rows.push((ix, line_top, line_bottom));
+            let line_bottom = line_top + line.height(line_height);
+            last_row = Some((ix, line_top));
+
+            if visible_rows.is_empty() {
+                // Find the first row that is in the viewport.
+                if line_bottom >= -scroll_top {
+                    visible_top = line_top;
+                    visible_rows.push(ix);
+                    if line_bottom + scroll_top >= input_height {
+                        remaining_extra = Some(extra_rows);
+                    }
+                }
+            } else {
+                match remaining_extra.as_mut() {
+                    None => {
+                        visible_rows.push(ix);
+                        if line_bottom + scroll_top >= input_height {
+                            remaining_extra = Some(extra_rows);
+                        }
+                    }
+                    Some(0) => break,
+                    Some(n) => {
+                        visible_rows.push(ix);
+                        *n -= 1;
+                    }
+                }
+            }
+
             line_top = line_bottom;
         }
 
-        if rows.is_empty() {
-            return (0..0, Vec::new(), px(0.));
+        if visible_rows.is_empty() {
+            // All rows are above the viewport (over-scrolled): fall back to
+            // the last row, matching the previous behavior.
+            let Some((ix, top)) = last_row else {
+                return (0..0, Vec::new(), px(0.));
+            };
+            visible_rows.push(ix);
+            visible_top = top;
         }
 
-        let start = rows
-            .iter()
-            .position(|(_, _, bottom)| *bottom >= -scroll_top)
-            .unwrap_or(rows.len().saturating_sub(1));
-        let end = rows
-            .iter()
-            .skip(start)
-            .position(|(_, _, bottom)| *bottom + scroll_top >= input_height)
-            .map(|ix| (start + ix + 1 + extra_rows).min(rows.len()))
-            .unwrap_or(rows.len());
-        let visible_rows = rows[start..end].iter().map(|(row, _, _)| *row).collect::<Vec<_>>();
-        let visible_top = rows[start].1;
         let visible_range = visible_rows
             .first()
             .zip(visible_rows.last())
@@ -920,6 +947,7 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let prepaint_start = std::time::Instant::now();
         let style = window.text_style();
         let font = style.font();
         let text_size = style.font_size.to_pixels(window.rem_size());
@@ -1204,7 +1232,7 @@ impl Element for TextElement {
         let hover_definition_hitbox = self.layout_hover_definition_hitbox(state, window, cx);
         let indent_guides_path = self.layout_indent_guides(state, &bounds, &last_layout, &text_style, window);
 
-        PrepaintState {
+        let prepaint_state = PrepaintState {
             bounds,
             last_layout,
             scroll_size,
@@ -1221,7 +1249,21 @@ impl Element for TextElement {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+        };
+
+        // Slow-frame tracing: a prepaint near/above one frame budget (16ms)
+        // makes scrolling feel janky; log enough context to locate the cost.
+        let elapsed = prepaint_start.elapsed();
+        if elapsed.as_millis() >= 16 {
+            debug!(
+                elapsed_ms = elapsed.as_millis(),
+                total_rows = self.state.read(cx).text_wrapper.lines.len(),
+                visible_rows = prepaint_state.last_layout.visible_rows.len(),
+                "Slow input prepaint frame"
+            );
         }
+
+        prepaint_state
     }
 
     fn paint(

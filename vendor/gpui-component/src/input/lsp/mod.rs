@@ -144,9 +144,17 @@ impl InputState {
         if event.modifiers.secondary() {
             self.handle_hover_definition(offset, window, cx);
         } else {
+            // Only notify when the hover-definition highlight actually goes
+            // away. An unconditional notify here forces a full re-layout of
+            // the editor on every mouse move, which makes large documents
+            // feel sluggish. The hover handlers notify on their own when
+            // their async results change state.
+            let had_hover_definition = !self.hover_definition.is_empty();
             self.hover_definition.clear();
             self.handle_hover_popover(offset, window, cx);
+            if had_hover_definition {
+                cx.notify();
+            }
         }
-        cx.notify();
     }
 }

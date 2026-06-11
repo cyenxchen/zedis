@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::assets::CustomIconName;
+use crate::helpers::truncate_single_line;
 use crate::states::{RedisValue, ZedisGlobalStore, ZedisServerState, i18n_common};
 use crate::views::{KvTableColumn, KvTableColumnType};
 use gpui::{App, Edges, Entity, SharedString, Window, div, prelude::*, px};
@@ -30,6 +31,11 @@ use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 use tracing::warn;
 
 pub const INDEX_COLUMN_NAME: &str = "#";
+
+/// Maximum characters rendered in a value cell. Cells are single-line, so
+/// anything beyond this is invisible; passing multi-MB values to `Label`
+/// would make GPUI shape the full string on every frame.
+const MAX_CELL_DISPLAY_CHARS: usize = 512;
 
 /// Trait defining the data fetching and manipulation interface for Key-Value data.
 /// Implementers allow the `ZedisKvDelegate` to display and edit various Redis data types (Hash, Set, List, ZSet).
@@ -468,8 +474,9 @@ impl<T: ZedisKvFetcher + 'static> TableDelegate for ZedisKvDelegate<T> {
             return base.child(Input::new(value_state).small().cleanable(true));
         }
 
-        // Default: Render value as label
+        // Default: Render value as label (truncated, cells are single-line)
         let value = self.fetcher.get(row_ix, value_col_ix).unwrap_or_else(|| "--".into());
+        let value = truncate_single_line(&value, MAX_CELL_DISPLAY_CHARS);
         base.child(Label::new(value).text_align(column.align))
     }
     /// Returns whether all data has been loaded (end of file).

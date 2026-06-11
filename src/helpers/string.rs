@@ -78,6 +78,41 @@ pub fn fast_contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
     haystack.to_lowercase().contains(needle_lower)
 }
 
+/// Truncates a value to its first line and at most `max_chars` characters
+/// for single-line display (e.g. table cells).
+///
+/// Multi-MB values must never reach GPUI's text layout: shaping the full
+/// string costs hundreds of milliseconds per frame even though the cell
+/// only shows the first line. Returns the original string (no allocation)
+/// when it already fits.
+pub fn truncate_single_line(value: &gpui::SharedString, max_chars: usize) -> gpui::SharedString {
+    let s = value.as_str();
+    let (line, has_more_lines) = match s.find('\n') {
+        Some(ix) => (&s[..ix], true),
+        None => (s, false),
+    };
+
+    // Fast path: when the first line fits in `max_chars` *bytes* it also fits
+    // in `max_chars` chars, so no char-level truncation is needed.
+    let truncated = if line.len() <= max_chars {
+        None
+    } else {
+        // `nth(max_chars)` is the byte index of the (max_chars + 1)-th char.
+        // `None` means the line has at most `max_chars` chars (multi-byte text
+        // whose *byte* length exceeded the budget) -> no truncation, no ellipsis.
+        line.char_indices().nth(max_chars).map(|(ix, _)| &line[..ix])
+    };
+
+    match (truncated, has_more_lines) {
+        // Genuinely cut by length: append the ellipsis.
+        (Some(prefix), _) => format!("{}…", prefix).into(),
+        // Whole first line shown, but more lines follow -> mark continuation.
+        (None, true) => format!("{}…", line.trim_end_matches('\r')).into(),
+        // Whole single-line value fits -> return as-is (no allocation).
+        (None, false) => value.clone(),
+    }
+}
+
 /// Encrypts a plaintext string using AES-256-GCM encryption.
 ///
 /// The encrypted data is encoded as Base64 for easy storage and transport.
@@ -237,5 +272,50 @@ pub fn redis_value_to_string(v: &Value) -> String {
             format!("Push({:?}): [{}]", kind, elements.join(", "))
         }
         _ => "Unsupported".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::SharedString;
+
+    #[test]
+    fn test_truncate_single_line() {
+        // Short single-line value: returned as-is (same Arc, no allocation)
+        let value: SharedString = "hello".into();
+        assert_eq!(truncate_single_line(&value, 10).as_ref(), "hello");
+
+        // Multi-line value: only the first line is kept
+        let value: SharedString = "line1\nline2".into();
+        assert_eq!(truncate_single_line(&value, 10).as_ref(), "line1…");
+
+        // CRLF line ending: trailing \r is trimmed
+        let value: SharedString = "line1\r\nline2".into();
+        assert_eq!(truncate_single_line(&value, 10).as_ref(), "line1…");
+
+        // Long value: truncated at max_chars on a char boundary
+        let value: SharedString = "abcdef".into();
+        assert_eq!(truncate_single_line(&value, 3).as_ref(), "abc…");
+
+        // Multi-byte chars: no panic on char boundaries
+        let value: SharedString = "测试数据很长".into();
+        assert_eq!(truncate_single_line(&value, 2).as_ref(), "测试…");
+
+        // Exactly max_chars: unchanged
+        let value: SharedString = "abc".into();
+        assert_eq!(truncate_single_line(&value, 3).as_ref(), "abc");
+
+        // Multi-byte single line whose BYTE length exceeds max_chars but whose
+        // CHAR count does not (200 CJK chars = 600 bytes, budget 512): must be
+        // returned untouched, with no spurious trailing ellipsis.
+        let value: SharedString = "测".repeat(200).into();
+        assert_eq!(truncate_single_line(&value, 512).as_ref(), value.as_ref());
+
+        // Same byte/char band but multi-line: the first line fits in chars, yet
+        // content continues, so an ellipsis IS expected.
+        let value: SharedString = format!("{}\nrest", "测".repeat(200)).into();
+        let expected = format!("{}…", "测".repeat(200));
+        assert_eq!(truncate_single_line(&value, 512).as_ref(), expected.as_str());
     }
 }
