@@ -34,3 +34,7 @@ cargo-sources.json
 .DS_Store
 .idea/
 *.log
+
+# 在 vendored 子 crate 目录内单独运行 cargo 时生成的 lock(测试副产物)。
+# 该 path 依赖的锁定已包含在被跟踪的根 Cargo.lock 中,此文件冗余。
+vendor/gpui-component/Cargo.lock
