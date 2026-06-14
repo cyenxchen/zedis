@@ -195,6 +195,12 @@ add_value_success = "字段添加成功"
 add_value_success_tips = "字段已添加。其位置由分数决定；您可能需要刷新才能看到它。"
 update_exist_field_value_success_tips = "字段值已更新。"
 
+[stream_editor]
+entry_id = "Entry ID"
+entry_id_placeholder = "输入 Entry ID（默认: *）"
+fields = "字段"
+fields_placeholder = "JSON 对象或数组，例如 {\"field\":\"value\"} 或 [[\"field\",\"value\"]]"
+add_entry_title = "添加 Stream Entry"
 
 [kv_table]
 search_tooltip = "点击开始增量扫描 (SCAN)"

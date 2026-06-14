@@ -196,6 +196,13 @@ add_value_success = "Field Added"
 add_value_success_tips = "Field added. Its position is determined by the score; you may need to refresh to view it."
 update_exist_field_value_success_tips = "Field value updated."
 
+[stream_editor]
+entry_id = "Entry ID"
+entry_id_placeholder = "Enter Entry ID (default: *)"
+fields = "Fields"
+fields_placeholder = "JSON object or array, e.g. {\"field\":\"value\"} or [[\"field\",\"value\"]]"
+add_entry_title = "Add Stream Entry"
+
 [kv_table]
 search_tooltip = "Click to start incremental search (SCAN)"
 add_value_tooltip = "Add new value"

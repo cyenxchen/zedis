@@ -94,6 +94,15 @@ pub enum ServerTask {
     /// Remove a value from a zset
     RemoveZsetValue,
 
+    /// Add a stream entry
+    AddStreamEntry,
+
+    /// Remove a stream entry
+    RemoveStreamEntry,
+
+    /// Remove multiple stream entries
+    RemoveStreamEntries,
+
     /// Remove a value from a hash
     RemoveHashValue,
 
@@ -151,6 +160,9 @@ impl ServerTask {
             ServerTask::RemoveSetValue => "remove_set_value",
             ServerTask::AddZsetValue => "add_zset_value",
             ServerTask::RemoveZsetValue => "remove_zset_value",
+            ServerTask::AddStreamEntry => "add_stream_entry",
+            ServerTask::RemoveStreamEntry => "remove_stream_entry",
+            ServerTask::RemoveStreamEntries => "remove_stream_entries",
             ServerTask::RemoveHashValue => "remove_hash_value",
             ServerTask::RemoveHashValues => "remove_hash_values",
             ServerTask::UpdateHashValue => "update_hash_value",

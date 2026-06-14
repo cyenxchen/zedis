@@ -17,7 +17,7 @@ use crate::{
     components::{EditValueDialogParams, SelectableTextState, open_edit_value_dialog},
     helpers::{EditorAction, format_duration, humanize_keystroke, validate_ttl},
     states::{KeyType, ServerEvent, ZedisGlobalStore, ZedisServerState, i18n_common, i18n_editor},
-    views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisZsetEditor},
+    views::{ZedisBytesEditor, ZedisHashEditor, ZedisListEditor, ZedisSetEditor, ZedisStreamEditor, ZedisZsetEditor},
 };
 use gpui::{App, ClipboardItem, Entity, FocusHandle, SharedString, Subscription, Window, div, prelude::*, px};
 use gpui_component::{
@@ -52,6 +52,7 @@ pub struct ZedisEditor {
     set_editor: Option<Entity<ZedisSetEditor>>,
     zset_editor: Option<Entity<ZedisZsetEditor>>,
     hash_editor: Option<Entity<ZedisHashEditor>>,
+    stream_editor: Option<Entity<ZedisStreamEditor>>,
 
     /// Selectable text state for key name display
     key_text_state: Entity<SelectableTextState>,
@@ -166,6 +167,7 @@ impl ZedisEditor {
             set_editor: None,
             zset_editor: None,
             hash_editor: None,
+            stream_editor: None,
             key_text_state,
             ttl_edit_mode: false,
             ttl_input_state,
@@ -196,6 +198,8 @@ impl ZedisEditor {
         } else if let Some(editor) = &self.zset_editor {
             editor.update(cx, |e, cx| e.focus_keyword(window, cx));
         } else if let Some(editor) = &self.hash_editor {
+            editor.update(cx, |e, cx| e.focus_keyword(window, cx));
+        } else if let Some(editor) = &self.stream_editor {
             editor.update(cx, |e, cx| e.focus_keyword(window, cx));
         }
         // bytes_editor has no keyword filter functionality
@@ -676,6 +680,9 @@ impl ZedisEditor {
         if key_type != KeyType::Hash {
             let _ = self.hash_editor.take();
         }
+        if key_type != KeyType::Stream {
+            let _ = self.stream_editor.take();
+        }
     }
 
     /// Render the appropriate editor based on the key type
@@ -720,6 +727,14 @@ impl ZedisEditor {
                 let editor = self.hash_editor.get_or_insert_with(|| {
                     debug!("Creating new hash editor");
                     cx.new(|cx| ZedisHashEditor::new(self.server_state.clone(), window, cx))
+                });
+                editor.clone().into_any_element()
+            }
+            KeyType::Stream => {
+                self.reset_editors(KeyType::Stream);
+                let editor = self.stream_editor.get_or_insert_with(|| {
+                    debug!("Creating new stream editor");
+                    cx.new(|cx| ZedisStreamEditor::new(self.server_state.clone(), window, cx))
                 });
                 editor.clone().into_any_element()
             }

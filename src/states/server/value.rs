@@ -241,6 +241,7 @@ pub enum RedisValueData {
     Set(Arc<RedisSetValue>),
     Zset(Arc<RedisZsetValue>),
     Hash(Arc<RedisHashValue>),
+    Stream(Arc<RedisStreamValue>),
 }
 
 /// Redis Set value structure with pagination support
@@ -291,6 +292,26 @@ pub struct RedisListValue {
     pub keyword: Option<SharedString>,
     pub size: usize,
     pub values: Vec<SharedString>,
+}
+
+/// Structure: (Message ID, Vec<(Field, Value)>)
+pub type RedisStreamEntry = (SharedString, Vec<(SharedString, SharedString)>);
+
+/// Redis Stream value structure with pagination support.
+#[derive(Debug, Clone, Default)]
+pub struct RedisStreamValue {
+    pub keyword: Option<SharedString>,
+    pub cursor: String,
+    pub size: usize,
+    pub done: bool,
+    pub values: Vec<RedisStreamEntry>,
+    pub reverse: bool,
+}
+
+impl RedisStreamValue {
+    pub fn get_entry_id(&self, index: usize) -> Option<SharedString> {
+        self.values.get(index).map(|(id, _)| id.clone())
+    }
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ViewMode {
@@ -366,6 +387,14 @@ impl RedisValue {
     /// Returns the hash value if the data is a Hash type
     pub fn hash_value(&self) -> Option<&Arc<RedisHashValue>> {
         if let Some(RedisValueData::Hash(data)) = self.data.as_ref() {
+            return Some(data);
+        }
+        None
+    }
+
+    /// Returns the stream value if the data is a Stream type
+    pub fn stream_value(&self) -> Option<&Arc<RedisStreamValue>> {
+        if let Some(RedisValueData::Stream(data)) = self.data.as_ref() {
             return Some(data);
         }
         None
