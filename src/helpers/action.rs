@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(target_os = "macos")]
+use crate::states::SettingsAction;
 use gpui::Action;
 use gpui::KeyBinding;
 use schemars::JsonSchema;
@@ -123,8 +125,19 @@ pub fn humanize_keystroke(keystroke: &str) -> String {
     display_text
 }
 
+#[cfg(target_os = "macos")]
+fn add_platform_hot_keys(mut hot_keys: Vec<KeyBinding>) -> Vec<KeyBinding> {
+    hot_keys.push(KeyBinding::new("cmd-,", SettingsAction::Editor, None));
+    hot_keys
+}
+
+#[cfg(not(target_os = "macos"))]
+fn add_platform_hot_keys(hot_keys: Vec<KeyBinding>) -> Vec<KeyBinding> {
+    hot_keys
+}
+
 pub fn new_hot_keys() -> Vec<KeyBinding> {
-    vec![
+    add_platform_hot_keys(vec![
         KeyBinding::new("secondary-q", MemuAction::Quit, None),
         KeyBinding::new("secondary-m", MemuAction::Minimize, None),
         KeyBinding::new("secondary-s", EditorAction::Save, None),
@@ -136,5 +149,22 @@ pub fn new_hot_keys() -> Vec<KeyBinding> {
         KeyBinding::new("secondary-a", KeyTreeAction::SelectAll, None),
         KeyBinding::new("delete", KeyTreeAction::DeleteSelected, Some("KeyTree")),
         KeyBinding::new("backspace", KeyTreeAction::DeleteSelected, Some("KeyTree")),
-    ]
+    ])
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use gpui::Keystroke;
+
+    #[test]
+    fn command_comma_opens_settings_on_macos() {
+        let command_comma = Keystroke::parse("cmd-,").expect("command-comma should be a valid keystroke");
+        let settings_binding = new_hot_keys()
+            .into_iter()
+            .find(|binding| binding.action().partial_eq(&SettingsAction::Editor))
+            .expect("settings key binding should be registered");
+
+        assert_eq!(settings_binding.match_keystrokes(&[command_comma]), Some(false));
+    }
 }
